@@ -1,0 +1,228 @@
+--- START OF FILE retro_cheatsheet_v21.txt ---
+# Retrogadget Lua Scripting Cheat Sheet (v21 - onInit Confirmed, Precise Colors)
+
+**Goal:** Provide reliable guidelines for Lua scripting in Retrogadget, optimized for AI understanding and code generation, incorporating user feedback on `onInit` reliability and precise color information.
+
+**Environment:**
+
+*   **Engine:** Retrogadget Game
+*   **Language:** Luau (based on `Lua 5.1` syntax, with specific extensions detailed below).
+*   **Execution Context:** Scripts run attached to a `Lua Controller` component.
+
+**Core Script Structure & Execution Flow:**
+
+1.  **Top Level:** Runs **once** immediately when the script loads or the simulation starts.
+    *   `[BEHAVIOR]` Executes before any engine callbacks.
+    *   `[RECOMMENDATION]` Ideal for `require` statements, defining constants, helper functions, initializing state tables *not* dependent on `gdt`.
+    *   `[WARNING]` Accessing `gdt` components here *might* work for some simple properties but is generally less reliable than `onInit` as components may not be fully initialized. Use `pcall` if attempted.
+    ```lua
+    -- [EXAMPLE] Top-level setup (gdt-independent)
+    local MyLib = require("my_utility_lib.lua")
+    local MAX_SPEED = 100
+    local function calculate_score(hits) return hits * 10 end
+    local gameSettings = { difficulty = "normal" }
+    print("Top-level: Libs required, constants/helpers defined.")
+    ```
+
+2.  **`onInit()`:** Optional callback function. **(Confirmed Functional for Load/Start)**
+    *   `[BEHAVIOR]` Called **once** automatically *after* the top-level code runs, specifically when the script is initially loaded or the simulation begins. `gdt` components are expected to be accessible here.
+    *   `[RECOMMENDATION]` **Preferred location for one-time setup code that needs to access `gdt` components** (e.g., getting component references like `_vc = gdt.VideoChip0`, reading initial dimensions `_vc.Width`, loading assets `standardFont = gdt.ROM...`).
+    *   `[WARNING]` This function **does NOT run** when a gadget is powered on via a `PowerButton` component *after* the initial load/start. Logic needed specifically at power-on must be handled in `update()`.
+    ```lua
+    -- [EXAMPLE] Initialization using onInit (gdt-dependent)
+    local _vc = nil
+    local _cpu = nil
+    local standardFont = nil
+    local SCREEN_W, SCREEN_H = 128, 128 -- Defaults
+
+    function onInit()
+        print("onInit: Starting initialization...")
+        local success = true
+        local errMsg = ""
+
+        -- Use pcall for robustness, though components *should* be ready here
+        local initSuccess_VC, vcRef = pcall(function() return gdt.VideoChip0 end)
+        if initSuccess_VC then _vc = vcRef else success = false; errMsg = errMsg .. " VideoChip0 fail;" end
+
+        local initSuccess_CPU, cpuRef = pcall(function() return gdt.CPU0 end)
+        if initSuccess_CPU then _cpu = cpuRef else success = false; errMsg = errMsg .. " CPU0 fail;" end
+
+        -- Attempt to get assets/properties
+        if _vc then
+             local widthSuccess, w = pcall(function() return _vc.Width end)
+             local heightSuccess, h = pcall(function() return _vc.Height end)
+             if widthSuccess and heightSuccess then SCREEN_W, SCREEN_H = w, h else success = false; errMsg = errMsg .. " Screen dims fail;" end
+        end
+        if gdt.ROM then
+            local fontSuccess, fontRef = pcall(function() return gdt.ROM.System.SpriteSheets["StandardFont"] end)
+            if fontSuccess and fontRef then standardFont = fontRef else success = false; errMsg = errMsg .. " Font load fail;" end
+        else
+             success = false; errMsg = errMsg .. " ROM fail;"
+        end
+
+        if success then
+            print("onInit: Initialization successful. Screen: " .. SCREEN_W .. "x" .. SCREEN_H)
+            -- Seed random now
+            if _cpu then math.randomseed(_cpu.Time) else math.randomseed(os.clock()) end
+            -- Proceed with other setup...
+        else
+            print("[ERROR] onInit: Initialization failed!" .. errMsg)
+            -- Handle failure gracefully, maybe set a flag for update()
+        end
+    end
+    ```
+
+3.  **`update(dt)`:** Optional callback function.
+    *   `[BEHAVIOR]` Called **repeatedly** every frame while the gadget simulation is running and powered (if applicable). Main game loop.
+    *   `[USE_CASE]` Primary location for game logic, input polling, drawing updates, checking timers.
+    *   `[USE_CASE]` **Required** for logic that needs to run specifically when powered on via a `PowerButton` (check `gdt.PowerButtonN.PowerState` changes here).
+    *   `[USE_CASE]` Can be used for initialization with a flag pattern (see v20) as an alternative if `onInit` proves problematic for a specific complex scenario, or if initialization needs to wait for >0 simulation time.
+
+4.  **`eventChannelN(sender, arg)`:** Optional callback functions.
+    *   `[BEHAVIOR]` Called automatically when data arrives on the corresponding input channel of the Lua Controller (e.g., from Wifi, KeyboardChip, GamepadChip).
+
+**Accessing Gadget Components (`gdt`):**
+
+*   Components accessed via global `gdt` table.
+*   Reference by **editor name** (case-sensitive, e.g., `gdt.VideoChip0`, `gdt.Wifi0`).
+    *   **Exception:** `LcdDisplay` components are referenced as `gdt.LcdN` (e.g., `gdt.Lcd0`).
+*   **Discovery:** Use `pairs(gdt)`.
+*   **Properties:** Use dot notation (`.Value`, `.Text`, `.LedState`, `.Width`).
+*   **Methods:** Use colon notation (`:Clear()`, `:Save()`, `:Play()`).
+
+**Common Component APIs:**
+
+*   **`VideoChipN`:** See **Drawing**. `.Width`, `.Height`.
+*   **`SliderN`:** `.Value` (0-100).
+*   **`ButtonN`/`LedButtonN`:** `.ButtonState` (held), `.ButtonDown` (pressed this frame), `.LedState` (read/write boolean).
+*   **`DPadN`:** `.X`, `.Y` (-100, 0, 100).
+*   **`CPUN`:** `.DeltaTime`, `.Time`.
+*   **`AudioChipN`:** `:SetChannelVolume()`, `:Play()`, `:IsPlaying()`.
+*   **`LcdN`:** **(LcdDisplay type)** `.Text` (write).
+*   **`ScreenN`:** `.Width`, `.Height`, `.Offset`.
+*   **`WifiN`:** See **Networking**. `.AccessDenied` (read-only boolean).
+*   **`FlashMemoryN`:** See **Persistence**. `.Size` (bytes, read-only), `.Usage` (bytes, read-only).
+*   **`PowerButtonN`:** `.PowerState` (boolean, read-only). Check state changes in `update()` for power-on logic.
+
+**Time & Frame Rate:**
+
+*   Use `gdt.CPU0`.
+*   `.DeltaTime` (`dt`): Time since last frame. **Clamp invalid values:** `if dt <= 0 or dt > 0.1 then dt = 1/60 end`.
+*   `.Time`: Total simulation time elapsed (seconds).
+*   `os.clock()`: High-precision timer (seconds). **[CONFIRMED] Available.**
+*   `math.randomseed()`: Use `gdt.CPU0.Time` (if available) or `os.clock()` for seeding. (`os.time()` is unavailable).
+*   **Manual Timers:** Use `timer = timer - dt` pattern in `update()`.
+
+**Input Handling:**
+
+*   **Stick (`gdt.StickN`):** `.X`, `.Y` (-100 to 100).
+*   **DPad (`gdt.DPadN`):** `.X`, `.Y` (-100, 0, 100). Use edge detection.
+*   **Button (`gdt.ButtonN`, `gdt.LedButtonN`):** `.ButtonDown` for press, `.ButtonState` for hold.
+*   **KeyboardChipN / GamepadChipN:** Send events to `eventChannelN`. Inspect `arg` table (`KeyCode`, `Char`, `ButtonName`, `IsPressed`, etc.). **[CONFIRMED]**
+
+**Drawing (VideoChip API - `gdt.VideoChipN`):**
+
+*   Reference: `local _vc = gdt.VideoChip0` (Best practice: Get reference in `onInit`).
+*   Dimensions: `_vc.Width`, `_vc.Height`.
+*   **Functions:** `:Clear`, `:SetPixel`, `:DrawLine`, `:DrawCircle`, `:FillCircle`, `:DrawRect`, `:FillRect`, `:DrawTriangle`, `:FillTriangle`, `:DrawSprite`, `:DrawCustomSprite`, `:RasterSprite`, `:RasterCustomSprite`, `:DrawText`, `:DrawPointGrid`, `:DrawRenderBuffer`, `:RasterRenderBuffer`, `:SetPixelData`, `:BlitPixelData`.
+*   **Coordinates:** Use `vec2(x, y)`. Use `math.floor()`.
+*   **Performance:** Can handle thousands of simple draw calls.
+*   **Render Targets:** `:RenderOnScreen()`, `:RenderOnBuffer(index)`.
+
+**Networking (Wifi API - `gdt.WifiN`):**
+
+*   **Permissions:** Check `gdt.Wifi0.AccessDenied`.
+*   **Asynchronous:** Requests non-blocking. Responses via `eventChannelN`.
+*   **Setup:** Connect Wifi output to Lua input channel. Implement `function eventChannelN(sender, response)`.
+*   **Requests:** `:WebGet(url)`, `:WebPutData(url, data)`, `:WebPostData(url, data)`, `:WebPostForm(url, form_table)`, `:WebCustomRequest(...)`. Return `handle`.
+*   **Control:** `:WebAbort(handle)`, `:GetWebUploadProgress(handle)`, `:GetWebDownloadProgress(handle)`.
+*   **Response Event:** `response` table (`RequestHandle`, `ResponseCode`, `IsError`, `ErrorMessage`, `Text`, `Data`). Handle `IsError`, `ResponseCode`. Match `RequestHandle`.
+
+**Data Types:**
+
+*   **`vec2` / `vec3`:** Built-in. Access `.X`, `.Y`, `.Z`. Arithmetic operators work. **NO built-in methods** (like `.normalize()`). **[CONFIRMED]**
+*   **`color` Objects:**
+    *   **Built-in Constants:** **Only the following 10 constants are available:** `color.black`, `color.blue`, `color.clear` (transparent black), `color.cyan`, `color.gray`, `color.green`, `color.magenta`, `color.red`, `color.white`, `color.yellow`. Use directly. **[CONFIRMED V17]**
+    *   **Other Colors:** Any other colors (e.g., orange, purple, lime, dark gray, specific shades) **MUST** be created using constructors. **[CONFIRMED V17]**
+    *   **Constructors (Use for custom colors):**
+        *   `Color(r, g, b)` (RGB 0-255)
+        *   `ColorRGBA(r, g, b, a)` (RGBA 0-255, Alpha `a` 0=transparent, 255=opaque).
+        *   `ColorHSV(h, s, v)` (Hue [0-360], Sat [0-100], Val [0-100]).
+    *   **Define Colors:** `local MY_ORANGE = ColorRGBA(255, 165, 0, 255)` or `local MY_RED = color.red`.
+*   **Assets:** `SpriteSheet`, `AudioSample` (obtained from `gdt.ROM`).
+*   **Lua Types:** Standard (`string`, `number`, `boolean`, `table`, `function`, `nil`, `userdata`). `thread` exists but `coroutine` library is unavailable.
+
+**Vector Math (Manual Implementation REQUIRED):**
+
+*   Need helpers for length, normalization, dot product, etc.
+    ```lua
+    local function vec2LengthSq(v) return (v.X*v.X + v.Y*v.Y) end
+    local function vec2Length(v) return math.sqrt(vec2LengthSq(v)) end
+    local function vec2Normalize(v) local len=vec2Length(v); return (len>1e-6) and vec2(v.X/len, v.Y/len) or vec2(0,0) end
+    ```
+
+**Luau Syntax Extensions:** Type Annotations (optional), `continue`, compound assignment (`+=`), if-expressions, generalized iteration, `string.split`, `table.create`, `table.clone`, `math.noise`, `math.clamp`, etc.
+
+**Standard Libraries (Available Globally):**
+
+*   **Globals:** `assert`, `error`, `print`, `pairs`, `ipairs`, `pcall`, `xpcall`, `type`, `tostring`, `tonumber`, etc.
+*   **`math`:** Standard functions + `noise`, `clamp`, `sign`, `round`, `lerp`. Constants `pi`, `huge`.
+*   **`table`:** Standard functions + `create`, `find`, `clear`, `freeze` (shallow), `isfrozen`, `clone`, `pack`, `unpack`, `move`.
+*   **`string`:** Standard functions + `split`, `pack`, `packsize`, `unpack`.
+*   **`bit32`:** Bitwise operations.
+*   **`utf8`:** UTF-8 support.
+*   **`os`:** **Only `os.clock()` confirmed available.** (`os.time`, `os.date`, `os.difftime` **are unavailable**). **[CONFIRMED]**
+*   **`debug`:** `info`, `traceback`. **(Likely restricted)**.
+
+**Restricted/Unavailable Standard Libraries:**
+
+*   **~~`coroutine`~~:** **Unavailable.** **[CONFIRMED]**
+*   **~~`buffer`~~:** **Unavailable.** **[CONFIRMED]**
+*   **~~`io`~~:** Unavailable.
+*   **~~`os`~~:** Most functions unavailable (except `clock`).
+*   **~~`package`~~:** Unavailable (`require` works differently).
+*   **~~`debug`~~:** Likely restricted.
+
+**External Libraries (`require`):**
+
+*   Place `.lua` files in project's `lua` subfolder.
+*   Use `local myLib = require("myLib.lua")` (use relative path from `lua` folder if needed, e.g., `require("subdir/myLib.lua")`).
+*   Use `pcall(require, ...)` for safe loading.
+*   Sandboxed: Cannot access arbitrary system paths. **[CONFIRMED]**
+*   Needed for tasks like JSON parsing, complex data structures.
+
+**Object-Oriented Programming:** Via metatables (standard Lua approach).
+
+**Accessing Assets (`gdt.ROM`):**
+
+*   Reference `gdt.ROM` (best in `onInit`).
+*   System: `gdt.ROM.System.SpriteSheets["AssetName"]`
+*   User: `gdt.ROM.User.SpriteSheets["AssetName.png"]`, `gdt.ROM.User.AudioSamples["SampleName.wav"]`
+
+**Persistence (`FlashMemoryN` API - `gdt.FlashMemoryN`):**
+
+*   Reference `gdt.FlashMemoryN` (best in `onInit`).
+*   **Properties:** `.Size` (bytes, read-only), `.Usage` (bytes, read-only).
+*   **Methods:** `:Save(table)` (returns boolean), `:Load()` (returns table or nil), `:Clear()`.
+*   **Data Limitations:** **Only reliably saves basic Lua types (number, string, boolean, nil) and nested tables containing ONLY these types.** Functions, userdata (`vec2`, assets), etc., will likely NOT save/load correctly (become `nil`). **[CONFIRMED VIA TESTING]**
+*   **Usage:** Check `.Usage == 0` or `Load() == nil` in `onInit` or `update` to set default data.
+
+**Common Patterns:** State machines, timers (`dt` accumulation), edge detection (input), safety checks (`if _vc then ... end`), backwards loops for table removal (`for i = #t, 1, -1 do`).
+
+**Error Handling & Debugging:**
+
+*   **Uncaught Errors:** Halt script execution. Use `pcall`. **[CONFIRMED]**
+*   **`pcall`:** `local status, result = pcall(function() ... end)`. Check `status`.
+*   **Debugging:** `print()`, `debug.traceback()`, draw debug info to screen (using valid colors!).
+
+**Key Limitations Summary:**
+
+*   `onInit` runs only on script load/sim start, not PowerButton activation.
+*   Only 10 built-in `color.*` constants; others require constructors (`Color`/`ColorRGBA`/`ColorHSV`).
+*   No built-in Vector methods (like `.normalize`). Manual helpers needed.
+*   Unavailable Libraries: `coroutine`, `io`, `buffer`, most of `os`.
+*   FlashMemory saves only basic Lua types and nested tables thereof. Size limits apply.
+*   `table.freeze` is shallow.
+*   No `goto`.
+
+--- END OF FILE retro_cheatsheet_v21.txt ---

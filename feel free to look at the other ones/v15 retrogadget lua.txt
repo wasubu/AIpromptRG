@@ -1,0 +1,172 @@
+--- START OF FILE Retrogadget Lua Scripting Cheat Sheet v15.txt ---
+
+Retrogadget Lua Scripting Cheat Sheet (v15 - Includes Wifi API & Latest Findings)
+
+**Goal:** To provide reliable guidelines for generating Lua code compatible with the Retrogadget environment, based on documentation, confirmed working examples, and direct testing.
+
+**Environment:**
+
+*   **Engine:** Retrogadget Game
+*   **Language:** Luau (based on Lua 5.1 syntax, with specific extensions detailed below).
+*   **Execution Context:** Scripts run attached to a Lua Controller component.
+
+**Core Script Structure & Execution:**
+
+1.  **Main Script File:** Code resides in a Lua script file.
+2.  **Execution Flow:**
+    *   Code at the **top level** runs **once** on script load/simulation start (used for `require` if needed, definitions, constants, one-off setup).
+    *   `onInit()`: Optional callback function. Called **once** after initial script load, before first `update()`. Good for setup that needs component access.
+    *   `update()`: Optional callback function. Called **repeatedly** every frame for main loop logic (input, physics, state, drawing).
+3.  **Event Handlers:** Functions like `eventChannelN(sender, arg)` are called automatically when data arrives on the corresponding input channel of the Lua Controller (configured in the editor). Used for asynchronous operations like Wifi responses.
+
+**Accessing Gadget Components (`gdt`):**
+
+*   Components accessed via global `gdt` table.
+*   Reference by **editor name** (case-sensitive, e.g., `gdt.VideoChip0`, `gdt.Wifi0`, `gdt.AudioChip0`).
+    *   **Exception:** `LcdDisplay` components are referenced as `gdt.LcdN` (e.g., `gdt.Lcd0`). **(Confirmed)**
+*   **Component Discovery:** Use `pairs(gdt)` to iterate over attached components and check their names/types.
+*   **Documented Component Types (Examples):** Input (AnalogStick, DPad, LedButton...), Output (LcdDisplay, Led, Screen...), Misc (AudioChip, CPU, ROM, VideoChip, Wifi, FlashMemory...).
+*   **Direct Property Access:** Use dot notation (e.g., `.Value`, `.Text`, `.LedState`, `.AccessDenied`).
+*   **Methods:** Use colon notation (e.g., `_vc:Clear()`, `wifi:WebGet()`).
+
+**Common Component APIs:**
+
+*   **`VideoChipN`:** See **Drawing** section. `.Width`, `.Height`.
+*   **`SliderN`:** `.Value` (0-100).
+*   **`ButtonN`/`LedButtonN`:** `.ButtonState` (held), `.ButtonDown` (pressed this frame), `.LedState` (read/write boolean).
+*   **`DPadN`:** `.X`, `.Y` (-100, 0, 100).
+*   **`CPUN`:** `.DeltaTime`, `.Time`.
+*   **`AudioChipN`:** `:SetChannelVolume()`, `:Play()`, `:IsPlaying()`.
+*   **`LcdN`:** **(LcdDisplay type)** `.Text` (write).
+*   **`ScreenN`:** `.Width`, `.Height`, `.Offset`.
+*   **`WifiN`:** See **Networking (Wifi)** section. `.AccessDenied` (read-only boolean).
+*   **`FlashMemoryN`:** `:Save(table)`, `:Load()` (returns table or nil), `:Clear()`. Used for persistent storage (see **Persistence**).
+
+**Time & Frame Rate:**
+
+*   Use `gdt.CPU0`.
+*   `.DeltaTime`: Time since last frame. **Clamp invalid values:** `if dt <= 0 or dt > 0.1 then dt = 1/60 end`.
+*   `.Time`: Total simulation time.
+*   `os.clock()`: High-precision timer.
+*   **Manual Timers:** Use `timer = timer - dt` in `update()`.
+
+**Input Handling:**
+
+*   **Stick (`gdt.StickN`):** `.X`, `.Y` (-100 to 100). Normalize: `val = _stick.X / 100`. Invert Y: `inputY = -_stick.Y / 100`.
+*   **DPad (`gdt.DPadN`):** `.X`, `.Y` (-100, 0, 100). Use edge detection (compare vs previous state).
+*   **Button (`gdt.ButtonN`, `gdt.LedButtonN`):** Use `.ButtonDown` for single actions, `.ButtonState` for holds.
+*   **KeyboardChipN / GamepadChipN:** Generate specific events (e.g., `KeyboardChipEvent`) received via `eventChannelN`. Check event `arg` for details.
+
+**Drawing (VideoChip API - `gdt.VideoChipN`):**
+
+*   Get reference: `local _vc = gdt.VideoChip0`. Dimensions: `_vc.Width`, `_vc.Height`.
+*   **Functions (Documented & Confirmed):**
+    *   Primitives: `:Clear`, `:SetPixel`, `:DrawLine`, `:DrawCircle`, `:FillCircle`, `:DrawRect`, `:FillRect`, `:DrawTriangle`, `:FillTriangle`.
+    *   Sprites: `:DrawSprite`, `:DrawCustomSprite`, `:RasterSprite`, `:RasterCustomSprite`.
+    *   Text: `:DrawText` (requires font `SpriteSheet`).
+    *   Other: `:DrawPointGrid`, `:DrawRenderBuffer`, `:RasterRenderBuffer`, `:SetPixelData`, `:BlitPixelData`.
+*   **Coordinates:** Use `vec2(x, y)`. Use `math.floor` for pixel-perfect placement.
+*   **Render Targets:** `:RenderOnScreen()`, `:RenderOnBuffer(index)`.
+
+**Networking (Wifi API - `gdt.WifiN`):**
+
+*   **Permissions:** User must grant network permission for the gadget. Check `gdt.Wifi0.AccessDenied` (boolean, read-only).
+*   **Asynchronous:** All web requests are non-blocking. Responses are delivered via `eventChannelN`.
+*   **Setup:** Configure Wifi component's output channel (e.g., Channel 1) to Lua Controller's input channel (Channel 1) in the editor. Implement `function eventChannel1(sender, response)` in Lua.
+*   **Request Methods (Return a numeric `handle`):**
+    *   `:WebGet(url)`
+    *   `:WebPutData(url, data_string)`
+    *   `:WebPostData(url, data_string)`
+    *   `:WebPostForm(url, form_table)` (Handles form encoding)
+    *   `:WebCustomRequest(url, method_string, headers_table, contentType_string, contentData_string)`
+*   **Control Methods:**
+    *   `:WebAbort(handle)`
+    *   `:GetWebUploadProgress(handle)` (returns 0-100)
+    *   `:GetWebDownloadProgress(handle)` (returns 0-100)
+*   **Cookie Methods:** `:ClearCookieCache()`, `:ClearUrlCookieCache(url)`.
+*   **Response Event (`WifiWebResponseEvent` received as `response` arg in `eventChannelN`):**
+    *   `response.RequestHandle` (number): Matches handle from the request call.
+    *   `response.ResponseCode` (number): HTTP Status Code (e.g., 200, 404).
+    *   `response.IsError` (boolean): True if the request failed (check first!).
+    *   `response.ErrorType` (string): Category of error if `IsError` is true.
+    *   `response.ErrorMessage` (string): Specific error message if `IsError` is true.
+    *   `response.ContentType` (string): MIME type from server response header.
+    *   `response.Text` (string): Response body decoded as UTF-8 text.
+    *   `response.Data` (string): Raw response body as binary data (useful for non-text).
+    *   `response.Type` (string): "WifiWebResponseEvent".
+*   **Handling:** Check `response.IsError`. If not error, check `response.ResponseCode`. Use `response.Text` or `response.Data`. Use libraries (`require`) for parsing (e.g., JSON). Use `RequestHandle` to match response to request if multiple are active. Use a state flag (e.g., `isWaitingForNetwork`) to manage script behavior while waiting.
+
+**Data Types:**
+
+*   **`vec2` / `vec3`:** Built-in. Access `.X`, `.Y`, `.Z`. Basic arithmetic (+,-,*,/). **NO built-in methods** (e.g., `:length`). Implement helpers manually. **(Confirmed)**
+*   **`color` Objects:**
+    *   **Built-in Constants:** Available and reliable (e.g., `color.red`, `color.clear`). **(Confirmed)**
+    *   **Constructors:** `Color(r,g,b)`, `ColorRGBA(r,g,b,a)` (alpha required), `ColorHSV(h,s,v)`.
+*   **`buffer`:** Fixed-size mutable memory block.
+*   **Assets:** `SpriteSheet`, `AudioSample` (accessed via `gdt.ROM`).
+*   **Lua Types:** Standard types (`string`, `number`, `boolean`, `table`, `function`, `nil`, `userdata`). `thread` type exists but `coroutine` library is unavailable.
+
+**Vector Math (Manual Implementation REQUIRED):**
+
+*   Need helper functions for magnitude, normalization, distance, etc.
+    ```lua
+    local function vec2Length(v) return math.sqrt((v.X or 0)^2 + (v.Y or 0)^2) end
+    local function vec2Normalize(v) local len=vec2Length(v); return (len>1e-4) and vec2(v.X/len,v.Y/len) or vec2(0,0) end
+    ```
+
+**Luau Syntax Extensions:** [Same as v14 - Literals, continue, compound assign, if-expr, iterators, floor div]
+
+**Type Annotations:** [Same as v14 - Optional syntax]
+
+**Standard Libraries (Available Globally):**
+
+*   **Globals:** `assert`, `error`, `print`, `pairs`, `ipairs`, `pcall`, `xpcall`, `type`, `tostring`, `tonumber`, etc.
+*   **`math`:** Standard functions + `noise`, `clamp`, `sign`, `round`, `lerp`.
+*   **`table`:** Standard functions + `create`, `find`, `clear`, `freeze` (shallow), `isfrozen`, `clone`.
+*   **`string`:** Standard functions + `split`.
+*   **~~`coroutine`~~:** **Unavailable.** **(Confirmed)**
+*   **`bit32`:** Bitwise operations.
+*   **`utf8`:** UTF-8 support.
+*   **`os`:** `clock`, `date`, `difftime`, `time`. **(File/process functions restricted)**.
+*   **`debug`:** `info`, `traceback`. **(Likely restricted)**.
+*   **`buffer`:** Memory block manipulation.
+
+**External Libraries (`require`):**
+
+*   Place Lua files (e.g., `json.lua`) in the project's `lua` folder (create if needed).
+*   Use `local myLib = require("myLib.lua")`. Handles nested requires.
+*   Use `pcall(require, "myLib.lua")` for safe loading.
+*   Likely restricted from accessing system paths outside the project structure.
+
+**Object-Oriented Programming:** Via metatables or external libraries if available/included.
+
+**Accessing Assets (`gdt.ROM`):**
+
+*   System: `gdt.ROM.System.SpriteSheets["AssetName"]`
+*   User: `gdt.ROM.User.SpriteSheets["AssetName.png"]`, `gdt.ROM.User.AudioSamples["SampleName.wav"]`
+
+**Persistence (`FlashMemoryN`):**
+
+*   Use `gdt.FlashMemory0` (or other index).
+*   `:Save(myTable)`: Saves Lua table data. Persists between runs and closing/reopening Retrogadget.
+    *   **Limitations:** Likely only saves basic Lua types (number, string, boolean, nil) and nested tables containing these. Will likely **fail** to save functions, userdata (like `vec2`, assets), threads. Test complex data structures. Size limits unknown but expect reasonable limits (KBs, not MBs).
+*   `:Load()`: Returns the saved table, or `nil` if nothing saved/cleared. Check for `nil` on first run.
+*   `:Clear()`: Erases saved data.
+
+**Common Patterns:** State machines, timers, edge detection, safety checks (`if obj then ...`), backwards loops for removal.
+
+**Error Handling & Debugging:**
+
+*   **Uncaught Errors:** Likely **halt script execution**. Use `pcall`.
+*   **`pcall`:** Use proactively around potentially failing code (`pcall(function() ... end)`).
+*   **Debugging:** `print()`, `debug.traceback()`, draw debug info to screen.
+
+**Known Limitations/Restrictions:**
+
+*   No `goto`.
+*   Restricted Libraries: `coroutine`, `io` **(Confirmed Unavailable)**, most of `os`, likely most of `debug`.
+*   No built-in Vector methods **(Confirmed)**.
+*   Shallow `table.freeze` **(Confirmed)**.
+*   FlashMemory likely has data type and size limitations.
+
+--- END OF FILE Retrogadget Lua Scripting Cheat Sheet v15.txt ---

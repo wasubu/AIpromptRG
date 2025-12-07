@@ -1,0 +1,537 @@
+# Retrogadget Lua Scripting Cheat Sheet (v19 - AI Friendly Format + Example)
+
+**Goal:** Provide reliable guidelines for Lua scripting in Retrogadget, optimized for AI understanding and code generation, based on documentation, user testing, and a working example.
+
+## Environment
+
+*   **Engine:** Retrogadget Game
+*   **Language:** Luau (based on `Lua 5.1` syntax)
+*   **Execution Context:** Scripts run attached to a `Lua Controller` component.
+
+## Core Script Structure & Execution
+
+1.  **Main Script File:** Code resides in a `.lua` file (e.g., `my_script.lua`).
+2.  **Execution Flow:**
+    *   **Top Level:** Runs **once** on script load/simulation start.
+        *   `[USE_CASE]` `require` statements, constants, initial function definitions.
+        *   `[NOTE]` Best for setup not needing immediate `gdt` component access.
+    *   **`onInit()`:** Optional callback function.
+        *   `[INTENDED_BEHAVIOR]` Called **once** automatically on initial script load/start (after top-level code).
+        *   `[WARNING]` `[USER_CONFIRMED]` May **NOT reliably run automatically** in all situations (e.g., script reloads).
+        *   `[RECOMMENDATION]` Perform essential one-time setup within `update()` using a flag pattern (see Initialization Strategy below or Example Game).
+        *   `[RULE]` Does **NOT** run when powered on via a `PowerButtonN` component.
+    *   **`update(dt)`:** Optional callback function.
+        *   `[BEHAVIOR]` Called **repeatedly** every frame while simulation is running and powered.
+        *   `[USE_CASE]` Main loop for logic, input, drawing.
+        *   `[ARGUMENT]` Receives `dt` (delta time in seconds).
+    *   **`eventChannelN(sender, arg)`:** Optional callback functions.
+        *   `[BEHAVIOR]` Called automatically when data arrives on the corresponding Lua Controller input channel `N`.
+        *   `[SOURCE]` Data from components like `WifiN`, `KeyboardChipN`, `GamepadChipN`.
+        *   `[ARGUMENTS]` `sender` (source component), `arg` (data table).
+3.  **Power-On Logic (`PowerButtonN`):**
+    *   `[TECHNIQUE]` Check for state changes of `gdt.PowerButtonN.PowerState` (boolean) within the `update()` loop to detect power-on events.
+4.  **Initialization Strategy (Recommended):**
+    *   `[REASON]` Compensates for potential `onInit()` unreliability.
+    *   `[PATTERN]` Use a flag checked at the start of `update()`.
+
+    ```lua
+    -- [EXAMPLE] Robust Initialization Pattern
+    local initialized = false
+    local _vc = nil
+
+    local function performInitialization()
+        if initialized then return end
+        print("Performing one-time initialization...")
+        _vc = gdt.VideoChip0
+        if not _vc then
+            print("[ERROR] VideoChip0 not found during init!")
+            return
+        end
+        initialized = true
+        print("Initialization complete.")
+    end
+
+    function update(dt)
+        performInitialization()
+        if not initialized then return end
+
+        if type(dt) ~= "number" or dt <= 0 or dt > 0.1 then dt = 1 / 60 end
+
+        -- Main update logic...
+    end
+    ```
+
+## Accessing Gadget Components (`gdt`)
+
+*   `[ACCESS]` Components are accessed via the global `gdt` table.
+*   `[REFERENCE]` Use the **editor name** (case-sensitive).
+    *   `[EXAMPLE]` `gdt.VideoChip0`, `gdt.Wifi0`, `gdt.LedButton0`.
+    *   `[EXCEPTION]` `LcdDisplay` components are referenced as `gdt.LcdN` (e.g., `gdt.Lcd0`).
+*   `[DISCOVERY]` Use `pairs(gdt)` to iterate over attached components at runtime.
+*   `[COMPONENT_TYPES]` Examples: `AnalogStick`, `DPad`, `LedButton`, `LcdDisplay`, `Led`, `Screen`, `AudioChip`, `CPU`, `ROM`, `VideoChip`, `Wifi`, `FlashMemory`.
+*   `[NOTE]` `[USER_CONFIRMED]` Plain `ButtonN` type may not exist; use `LedButtonN`.
+*   **Accessing Members:**
+    *   `[PROPERTY_ACCESS]` Use dot notation: `component.PropertyName` (e.g., `gdt.Slider0.Value`).
+    *   `[METHOD_ACCESS]` Use colon notation: `component:MethodName(args)` (e.g., `gdt.VideoChip0:Clear()`).
+
+## Common Component APIs
+
+*   **`VideoChipN`**: See [Drawing](#drawing-videochip-api---gdtvideochipn). Properties: `.Width`, `.Height` (read-only numbers).
+*   **`SliderN`**: Property: `.Value` (number, 0-100).
+*   **`LedButtonN`**: Properties: `.ButtonState` (boolean, true if held), `.ButtonDown` (boolean, true on press frame), `.LedState` (read/write boolean). `[NOTE]` `[USER_CONFIRMED]` Use this instead of `ButtonN`.
+*   **`DPadN`**: Properties: `.X`, `.Y` (numbers: -100, 0, 100).
+*   **`CPUN`**: Properties: `.DeltaTime` (number, use `dt` argument in `update`), `.Time` (number, total simulation seconds).
+*   **`AudioChipN`**: Methods: `:SetChannelVolume()`, `:Play()`, `:IsPlaying()`.
+*   **`LcdN`** (`LcdDisplay` type): Property: `.Text` (write string).
+*   **`ScreenN`**: Properties: `.Width`, `.Height`, `.Offset` (read-only).
+*   **`WifiN`**: See [Networking](#networking-wifi-api---gdtwifin). Property: `.AccessDenied` (read-only boolean).
+*   **`FlashMemoryN`**: See [Persistence](#persistence-flashmemoryn-api---gdtflashmemoryn). Properties: `.Size`, `.Usage` (read-only numbers).
+*   **`PowerButtonN`**: Property: `.PowerState` (read-only boolean).
+
+## Time & Frame Rate
+
+*   `[SOURCE]` Use `gdt.CPU0` for time information.
+*   **`.DeltaTime` (`dt` in `update`)**:
+    *   `[DEFINITION]` Time since the last frame (seconds).
+    *   `[RECOMMENDATION]` `[RULE]` Always validate and clamp `dt`:
+        ```lua
+        if type(dt) ~= "number" or dt <= 0 or dt > 0.1 then dt = 1 / 60 end
+        ```
+*   **`.Time`**:
+    *   `[DEFINITION]` Total simulation time elapsed (seconds).
+    *   `[USE_CASE]` Good for seeding random numbers.
+*   **`os.clock()` / `os.time()`**:
+    *   `[STATUS]` **Unavailable.** `[USER_CONFIRMED]`
+*   **`math.randomseed()`**:
+    *   `[RECOMMENDATION]` Seed using CPU time: `math.randomseed(gdt.CPU0.Time)`.
+*   **Manual Timers:**
+    *   `[TECHNIQUE]` Decrement a variable by `dt` in `update()`: `timer = timer - dt`.
+
+## Input Handling
+
+*   **Stick (`gdt.StickN`)**: Properties: `.X`, `.Y` (numbers, -100 to 100).
+*   **DPad (`gdt.DPadN`)**: Properties: `.X`, `.Y` (numbers: -100, 0, 100). `[TECHNIQUE]` Use edge detection (compare current state vs. previous state stored in a variable) for press events.
+*   **LedButton (`gdt.LedButtonN`)**: Properties: `.ButtonDown` (boolean, for press event), `.ButtonState` (boolean, for hold state).
+*   **`KeyboardChipN` / `GamepadChipN`**:
+    *   `[BEHAVIOR]` Generate events received via `eventChannelN(sender, arg)`.
+    *   `[DATA]` Inspect the `arg` table for fields like `KeyCode`, `Char`, `ButtonName`, `AxisValue`, `IsPressed`. `[CONFIRMED]`
+
+## Drawing (VideoChip API - `gdt.VideoChipN`)
+
+*   `[REFERENCE]` `local _vc = gdt.VideoChip0`
+*   `[DIMENSIONS]` `_vc.Width`, `_vc.Height`
+*   `[COORDINATES]` Use `vec2(x, y)`. `[RECOMMENDATION]` Use `math.floor()` for integer coordinates passed to drawing functions.
+*   `[PERFORMANCE]` Can handle thousands (~10k) of simple draw calls/frame. Performance varies.
+*   `[RENDER_TARGETS]` Methods: `:RenderOnScreen()`, `:RenderOnBuffer(index)`.
+
+### Functions (Signatures Critical)
+
+*   **`:Clear`**
+    *   `[API_SIGNATURE]` `:Clear(color color)`
+    *   `[DESCRIPTION]` Clears the render target with a color.
+*   **`:SetPixel`**
+    *   `[API_SIGNATURE]` `:SetPixel(position vec2, color color)`
+*   **`:DrawLine`**
+    *   `[API_SIGNATURE]` `:DrawLine(position1 vec2, position2 vec2, color color)`
+*   **`:DrawCircle`**
+    *   `[API_SIGNATURE]` `:DrawCircle(center vec2, radius number, color color)`
+    *   `[DESCRIPTION]` Draws circle outline.
+*   **`:FillCircle`**
+    *   `[API_SIGNATURE]` `:FillCircle(center vec2, radius number, color color)`
+    *   `[DESCRIPTION]` Draws filled circle.
+*   **`:DrawRect`**
+    *   `[API_SIGNATURE]` `:DrawRect(position1 vec2, position2 vec2, color color)`
+    *   `[DESCRIPTION]` Draws rectangle outline between two opposite corner points.
+*   **`:FillRect`**
+    *   `[API_SIGNATURE]` `:FillRect(position1 vec2, position2 vec2, color color)`
+    *   `[DESCRIPTION]` Fills rectangle between two opposite corner points. `[NOTE]` Uses corners, not pos+width+height. `[USER_CONFIRMED]`
+*   **`:DrawTriangle`**
+    *   `[API_SIGNATURE]` `:DrawTriangle(position1 vec2, position2 vec2, position3 vec2, color color)`
+*   **`:FillTriangle`**
+    *   `[API_SIGNATURE]` `:FillTriangle(position1 vec2, position2 vec2, position3 vec2, color color)`
+*   **`:DrawSprite`**
+    *   `[API_SIGNATURE]` `:DrawSprite(spriteSheet SpriteSheet, spriteIndex number, position vec2, color color, flags number)`
+*   **`:DrawCustomSprite`**
+    *   `[API_SIGNATURE]` `:DrawCustomSprite(spriteSheet SpriteSheet, spriteIndex number, position vec2, size vec2, color color, flags number)`
+*   **`:DrawText`**
+    *   `[API_SIGNATURE]` `:DrawText(position vec2, fontSprite SpriteSheet, text string, textColor color, backgroundColor color)`
+    *   `[DESCRIPTION]` Draws text using a font spritesheet.
+    *   `[REQUIRES]` A `SpriteSheet` asset for `fontSprite`. See [Accessing Assets](#accessing-assets-gdtrom).
+    *   `[EXAMPLE_FONT]` `gdt.ROM.System.SpriteSheets["StandardFont"]`
+    *   `[NOTE]` Use `color.clear` for `backgroundColor` to achieve transparency. `[USER_CONFIRMED]`
+*   *(Other functions exist, e.g., `:RasterSprite`, `:DrawPointGrid`. Verify signatures if used.)*
+
+## Networking (Wifi API - `gdt.WifiN`)
+
+*   `[PERMISSION]` Requires user permission via in-game prompt. Check `gdt.Wifi0.AccessDenied` (read-only boolean).
+*   `[ASYNCHRONOUS]` Requests are non-blocking. Responses arrive via `eventChannelN`.
+*   `[SETUP]` Connect `WifiN` output channel to `Lua Controller` input channel `N` in the editor. Implement `function eventChannelN(sender, response)` in Lua.
+*   **Request Methods (Return `handle` number):**
+    *   `:WebGet(url)`
+    *   `:WebPutData(url, data_str)`
+    *   `:WebPostData(url, data_str)`
+    *   `:WebPostForm(url, form_table)`
+    *   `:WebCustomRequest(url, method, headers_table, contentType, contentData)`
+*   **Control Methods:**
+    *   `:WebAbort(handle)`
+    *   `:GetWebUploadProgress(handle)`
+    *   `:GetWebDownloadProgress(handle)`
+*   **Cookie Methods:**
+    *   `:ClearCookieCache()`
+    *   `:ClearUrlCookieCache(url)`
+*   **Response Event (`WifiWebResponseEvent` received in `eventChannelN`):**
+    *   `[DATA]` `response` is a table containing: `RequestHandle`, `ResponseCode` (number), `IsError` (boolean), `ErrorType` (string), `ErrorMessage` (string), `ContentType` (string), `Text` (string, UTF-8 body), `Data` (string, raw binary body - needs parsing).
+    *   `[HANDLING]` Check `response.IsError`, then `response.ResponseCode`. Use `response.Text` or `response.Data`. Match `response.RequestHandle` if multiple requests are active. Use state flags (booleans) in your script while waiting for a response.
+
+## Data Types
+
+*   **`vec2` / `vec3`:**
+    *   `[TYPE]` Built-in userdata types.
+    *   `[ACCESS]` `.X`, `.Y` (for `vec2`), `.Z` (for `vec3`).
+    *   `[OPERATIONS]` Standard arithmetic (`+`, `-`, `*`, `/` with numbers or other vectors).
+    *   `[LIMITATION]` `[CONFIRMED]` **No built-in methods** (like `.normalize()` or `.length()`). Implement manually (see [Vector Math](#vector-math-manual-implementation-required)).
+*   **`color` Objects:**
+    *   `[TYPE]` Built-in userdata type.
+    *   `[BUILTIN_CONSTANTS]` `[CONFIRMED]` **Only 10 available:** `color.black`, `color.blue`, `color.clear` (transparent black), `color.cyan`, `color.gray`, `color.green`, `color.magenta`, `color.red`, `color.white`, `color.yellow`.
+    *   `[CUSTOM_COLORS]` `[RULE]` **MUST** use constructors for any other colors.
+    *   `[CONSTRUCTORS]`
+        *   `Color(r, g, b)` (RGB 0-255)
+        *   `ColorRGBA(r, g, b, a)` (RGBA 0-255, Alpha `a`: 0=transparent, 255=opaque)
+        *   `ColorHSV(h, s, v)` (Hue [0-360], Sat [0-100], Val [0-100])
+    *   `[EXAMPLE]` `local MY_LIME = ColorRGBA(0, 255, 0, 255)` (Note: different from `color.green`)
+*   **Assets:**
+    *   `[TYPES]` `SpriteSheet`, `AudioSample` (userdata types obtained from `gdt.ROM`).
+*   **Lua Types:**
+    *   `[SUPPORTED]` Standard types: `string`, `number`, `boolean`, `table`, `function`, `nil`, `userdata`. `thread` type exists but coroutines are disabled.
+
+## Vector Math (Manual Implementation Required)
+
+*   `[NOTE]` Built-in `vec2`/`vec3` lack common methods.
+*   `[EXAMPLE]` Helper functions:
+    ```lua
+    local function vec2Length(v)
+        local x = v.X or 0
+        local y = v.Y or 0
+        return math.sqrt(x*x + y*y)
+    end
+
+    local function vec2Normalize(v)
+        local len = vec2Length(v)
+        if len > 1e-6 then
+            return vec2(v.X / len, v.Y / len)
+        else
+            return vec2(0, 0)
+        end
+    end
+    ```
+
+## Luau Syntax Extensions
+
+*   **Type Literals:** `true`, `false`, `nil`, numbers (`123`, `0xFACE`, `3.14`), strings (`"hello"`, `[[world]]`).
+*   **`continue`:** Skips to the next iteration of `while`, `repeat`, `for` loops.
+*   **Compound Assignments:** `+=`, `-=`, `*=`, `/=`, `%=`, `^=`, `..=`.
+*   **If Expressions:** `local value = if condition then expr1 else expr2`.
+*   **Generalized Iterators:** Standard `pairs` and `ipairs`.
+*   **Floor Division:** `x // y` (equivalent to `math.floor(x / y)`).
+
+## Type Annotations
+
+*   `[SYNTAX]` Optional type checking using `:` after variable/parameter names and `->` for return types.
+*   `[EXAMPLE]`
+    ```lua
+    local score: number = 0
+    local playerPos: vec2 = vec2(10, 20)
+
+    local function move(obj: table, delta: vec2): boolean
+        return true
+    end
+
+    local name: string? = nil
+    ```
+
+## Standard Libraries (Availability Notes)
+
+*   **Globals:** Standard functions like `assert`, `error`, `print`, `pairs`, `ipairs`, `pcall`, `xpcall`, `type`, `tostring`, `tonumber`, etc. are available.
+*   **`math`:** Standard functions (`sin`, `cos`, `sqrt`, `random`, etc.) plus Luau extensions: `noise`, `clamp`, `sign`, `round`, `lerp`. Constants `math.pi`, `math.huge`.
+*   **`table`:** Standard functions (`insert`, `remove`, `sort`, etc.) plus Luau extensions: `create`, `find`, `clear`, `freeze` (shallow), `isfrozen`, `clone` (shallow), `pack`, `unpack`, `move`.
+*   **`string`:** Standard functions (`sub`, `find`, `gmatch`, `format`, etc.) plus Luau extensions: `split`, `pack`, `packsize`, `unpack`.
+*   **~~`coroutine`~~:** `[STATUS]` **Unavailable.** `[CONFIRMED]`
+*   **`bit32`:** `[STATUS]` Available for bitwise operations.
+*   **`utf8`:** `[STATUS]` Available for UTF-8 string manipulation.
+*   **`os`:** `[STATUS]` **Largely unavailable.** `os.clock()`, `os.time()`, `os.date()`, `os.difftime()` are **unavailable**. `[USER_CONFIRMED]` `[RECOMMENDATION]` Use `gdt.CPU0.Time` for seeding or timing.
+*   **`debug`:** `[STATUS]` Partially available (`info`, `traceback`) but likely restricted/sandboxed.
+*   **~~`buffer`~~:** `[STATUS]` **Unavailable.** `[CONFIRMED]`
+*   **~~`io`~~:** `[STATUS]` **Unavailable.** `[CONFIRMED]` No direct file system access.
+
+## External Libraries (`require`)
+
+*   `[LOCATION]` Place external `.lua` files in the project's `lua` subfolder.
+*   `[USAGE]` Use `local myLib = require("myLib")` or `local myLib = require("myLib.lua")`.
+*   `[SAFETY]` Use `pcall(require, "myLib")` for safe loading.
+*   `[SANDBOX]` `[CONFIRMED]` Cannot access arbitrary system paths.
+*   `[USE_CASE]` Needed for complex tasks like JSON parsing, advanced data structures, etc.
+
+## Object-Oriented Programming (OOP)
+
+*   `[TECHNIQUE]` Implement using standard Lua metatables (`__index`, etc.).
+
+## Accessing Assets (`gdt.ROM`)
+
+*   `[REQUIRES]` A `ROM` component must be attached to the gadget in the editor.
+*   **Access Paths:**
+    *   `[SYSTEM_FONT]` `gdt.ROM.System.SpriteSheets["StandardFont"]` (`[NOTE]` Required for default `:DrawText`).
+    *   `[USER_SPRITES]` `gdt.ROM.User.SpriteSheets["YourSpriteSheetName.png"]`
+    *   `[USER_AUDIO]` `gdt.ROM.User.AudioSamples["YourSampleName.wav"]`
+
+## Persistence (`FlashMemoryN` API - `gdt.FlashMemoryN`)
+
+*   `[REQUIRES]` A `FlashMemory` component attached.
+*   **Properties:**
+    *   `.Size`: `number` - Total capacity in bytes (Read-only). (Examples: Small=4096, Medium=32768, Large=~256k).
+    *   `.Usage`: `number` - Currently used bytes (Read-only).
+*   **Methods:**
+    *   `:Save(dataTable)`: Saves the provided `dataTable`. Returns `boolean` (success/fail). `[LIMITATION]` See data limitations below.
+    *   `:Load()`: Returns the previously saved table, or `nil` if nothing saved/cleared.
+    *   `:Clear()`: Erases all saved data in this component.
+*   **Data Limitations:**
+    *   `[RULE]` `[CONFIRMED]` Only reliably saves basic Lua types (`number`, `string`, `boolean`, `nil`) and nested `table`s containing **only** these basic types.
+    *   `[WARNING]` Functions, userdata (`vec2`, assets like `SpriteSheet`), threads, etc., will likely **NOT** be saved correctly (often become `nil` on load).
+*   **Usage Pattern:**
+    *   `[TECHNIQUE]` On script start (e.g., in `performInitialization`), call `local loadedData = gdt.FlashMemory0:Load()`.
+    *   `[TECHNIQUE]` If `loadedData == nil`, initialize default game state/settings. Otherwise, use `loadedData`.
+    *   `[TECHNIQUE]` Call `gdt.FlashMemory0:Save(currentGameStateTable)` when data needs saving (e.g., level complete, settings change).
+
+## Common Patterns & Techniques
+
+*   **State Machines:** Use a variable (e.g., `gameState = "menu"`) to control logic flow in `update()`.
+*   **Timers:** Use `timer = timer - dt` pattern in `update()`.
+*   **Edge Detection:** Store previous input state (`lastButtonState = currentButtonState`) and compare in the current frame to detect presses/releases (or use `.ButtonDown` for buttons).
+*   **Safety Checks:** Use `if componentReference then ... end` before accessing potentially missing components (especially if dynamically added/removed or during init).
+*   **Table Removal:** Iterate backwards with `for i = #myTable, 1, -1 do ... table.remove(myTable, i) ... end` when removing items during iteration.
+*   **Robust Initialization:** See [Initialization Strategy](#initialization-strategy-recommended).
+
+## Error Handling & Debugging
+
+*   **Uncaught Errors:** `[BEHAVIOR]` `[CONFIRMED]` Halt script execution.
+*   **`pcall` / `xpcall`:**
+    *   `[RECOMMENDATION]` Wrap potentially failing code (e.g., `require`, network calls, complex logic) in `pcall(function() ... end)`.
+    *   `[RETURN_VALUE]` `local success, resultOrError = pcall(...)`. Check `success` (boolean).
+*   **Debugging Output:**
+    *   `print(...)`: Outputs to the Retrogadget console.
+    *   `debug.traceback()`: Get stack trace string.
+    *   Draw debug info directly to the screen using drawing functions (remember `DrawText` needs a font!).
+
+## Known Limitations & Restrictions Summary
+
+*   `[SYNTAX]` No `goto` statement.
+*   `[LIBRARIES]` `[CONFIRMED]` Unavailable/Restricted: `coroutine`, `io`, `buffer`, most of `os` (including `os.clock`, `os.time`). `debug` is likely restricted.
+*   `[DATA_TYPES]` `[CONFIRMED]` No built-in `vec2`/`vec3` methods.
+*   `[DATA_TYPES]` `[CONFIRMED]` Only 10 built-in `color.X` constants. Use constructors for others.
+*   `[API]` `[CONFIRMED]` Specific, non-standard signatures for drawing functions (`DrawText`, `FillRect` confirmed). Verify others if used.
+*   `[EXECUTION]` `[USER_CONFIRMED]` `onInit()` may not run automatically; use robust initialization pattern.
+*   `[COMPONENTS]` `[USER_CONFIRMED]` `gdt.ButtonN` likely unavailable; use `gdt.LedButtonN`.
+*   `[PERSISTENCE]` `[CONFIRMED]` `FlashMemoryN:Save()` has data type limitations (basic types only).
+*   `[PERSISTENCE]` `FlashMemoryN` has limited storage size.
+
+## Example: Breakout Game (Uncommented Code)
+
+`[NOTE]` This example assumes components named `VideoChip0`, `CPU0`, `Slider0`, `LedButton0`, and `ROM` exist on the gadget. `Lcd0` is optional.
+
+```lua
+local _vc = nil
+local _cpu = nil
+local _slider = nil
+local _button = nil
+local _rom = nil
+local _lcd = nil
+
+local standardFont = nil
+
+local SCREEN_W = 128
+local SCREEN_H = 128
+
+local PADDLE_WIDTH = 24
+local PADDLE_HEIGHT = 4
+local PADDLE_Y_OFFSET = 8
+local BALL_RADIUS = 2
+local BRICK_ROWS = 4
+local BRICKS_PER_ROW = 8
+local BRICK_WIDTH = 14
+local BRICK_HEIGHT = 6
+local BRICK_HPADDING = 1
+local BRICK_VPADDING = 2
+local BRICK_AREA_TOP_MARGIN = 20
+local INITIAL_LIVES = 3
+
+local COLOR_BG = color.black
+local COLOR_PADDLE = color.blue
+local COLOR_BALL = color.white
+local COLOR_TEXT = color.yellow
+local COLOR_GAMEOVER = color.red
+local COLOR_WIN = color.green
+local COLOR_TEXT_BG = color.clear
+local BRICK_COLORS = {
+    ColorRGBA(200, 70, 70, 255),
+    ColorRGBA(70, 200, 70, 255),
+    ColorRGBA(70, 70, 200, 255),
+    ColorRGBA(200, 200, 70, 255),
+}
+
+local gameState = "init"
+local score = 0
+local lives = INITIAL_LIVES
+local bricks = {}
+local bricksRemaining = 0
+
+local paddle = { x = 0, y = 0, width = PADDLE_WIDTH, height = PADDLE_HEIGHT }
+local ball = { x = 0, y = 0, radius = BALL_RADIUS, dx = 0, dy = 0 }
+local ballSpeed = 60
+
+local initialized = false
+
+local function drawCenteredText(y, text, textColor)
+    if not standardFont then return end
+    local textWidth = string.len(text) * 6
+    local x = math.floor((SCREEN_W - textWidth) / 2)
+    if x < 0 then x = 0 end
+    _vc:DrawText(vec2(x, y), standardFont, text, textColor, COLOR_TEXT_BG)
+end
+
+local function resetBall()
+    ball.x = paddle.x + paddle.width / 2
+    ball.y = paddle.y - ball.radius - 1
+    ball.dx = (math.random() > 0.5) and 1 or -1
+    ball.dy = -1
+    local len = math.sqrt(ball.dx^2 + ball.dy^2)
+    if len > 1e-6 then
+        ball.dx = ball.dx / len * ballSpeed
+        ball.dy = ball.dy / len * ballSpeed
+    else
+        ball.dx = 0; ball.dy = -ballSpeed
+    end
+end
+
+local function setupLevel()
+    bricks = {}; bricksRemaining = 0; score = 0; lives = INITIAL_LIVES
+    local totalBrickRowWidth = (BRICKS_PER_ROW * BRICK_WIDTH) + ((BRICKS_PER_ROW - 1) * BRICK_HPADDING)
+    local startX = math.floor((SCREEN_W - totalBrickRowWidth) / 2)
+    local currentY = BRICK_AREA_TOP_MARGIN
+    for r = 1, BRICK_ROWS do
+        local currentX = startX
+        local brickColor = BRICK_COLORS[((r - 1) % #BRICK_COLORS) + 1]
+        for c = 1, BRICKS_PER_ROW do
+            table.insert(bricks, {x=currentX, y=currentY, width=BRICK_WIDTH, height=BRICK_HEIGHT, color=brickColor, active=true})
+            bricksRemaining = bricksRemaining + 1
+            currentX = currentX + BRICK_WIDTH + BRICK_HPADDING
+        end
+        currentY = currentY + BRICK_HEIGHT + BRICK_VPADDING
+    end
+    paddle.x = math.floor((SCREEN_W - paddle.width) / 2)
+    paddle.y = SCREEN_H - PADDLE_HEIGHT - PADDLE_Y_OFFSET
+    resetBall()
+    gameState = "playing"
+end
+
+local function performInitialization()
+    if initialized then return end
+    print("Breakout: Initializing...")
+    _vc = gdt.VideoChip0; _cpu = gdt.CPU0; _slider = gdt.Slider0; _button = gdt.LedButton0; _rom = gdt.ROM; _lcd = gdt.Lcd0
+
+    if not _vc then print("[ERROR] VideoChip0 not found!"); return end
+    if not _cpu then print("[ERROR] CPU0 not found!"); return end
+    if not _slider then print("[ERROR] Slider0 not found!"); return end
+    if not _button then print("[ERROR] LedButton0 not found!"); return end
+    if not _rom then print("[ERROR] ROM component not found!"); return end
+
+    if _rom.System and _rom.System.SpriteSheets then standardFont = _rom.System.SpriteSheets["StandardFont"] end
+    if not standardFont and _rom.User and _rom.User.SpriteSheets then standardFont = _rom.User.SpriteSheets["StandardFont"] end
+    if not standardFont then print("[ERROR] StandardFont asset not found!"); return end
+
+    SCREEN_W = _vc.Width; SCREEN_H = _vc.Height
+    if _cpu then math.randomseed(_cpu.Time) else math.randomseed(0); print("[Warning] CPU0 not available for random seed.") end
+    paddle.x = math.floor((SCREEN_W - paddle.width) / 2)
+    paddle.y = SCREEN_H - PADDLE_HEIGHT - PADDLE_Y_OFFSET
+
+    print("Breakout: Initialization Complete. Screen: " .. SCREEN_W .. "x" .. SCREEN_H)
+    initialized = true
+    gameState = "start"
+end
+
+
+function update(dt)
+    performInitialization()
+    if not initialized then return end
+
+    if type(dt) ~= "number" or dt <= 0 or dt > 0.1 then dt = 1 / 60 end
+
+    local sliderValue = _slider.Value
+    local buttonPressed = _button.ButtonDown
+
+    if gameState == "start" then
+        if buttonPressed then setupLevel() end
+    elseif gameState == "playing" then
+        paddle.x = math.floor((sliderValue / 100) * (SCREEN_W - paddle.width))
+        ball.x = ball.x + ball.dx * dt; ball.y = ball.y + ball.dy * dt
+        if ball.x - ball.radius < 0 then ball.x = ball.radius; ball.dx = -ball.dx end
+        if ball.x + ball.radius > SCREEN_W then ball.x = SCREEN_W - ball.radius; ball.dx = -ball.dx end
+        if ball.y - ball.radius < 0 then ball.y = ball.radius; ball.dy = -ball.dy end
+        if ball.dy > 0 and ball.y + ball.radius >= paddle.y and ball.y - ball.radius < paddle.y + paddle.height and ball.x + ball.radius >= paddle.x and ball.x - ball.radius <= paddle.x + paddle.width then
+            ball.y = paddle.y - ball.radius; ball.dy = -ball.dy
+            local hitPos = (ball.x - (paddle.x + paddle.width / 2)) / (paddle.width / 2); ball.dx = hitPos * ballSpeed * 1.2
+            local currentSpeedSq = ball.dx^2 + ball.dy^2; local desiredSpeedSq = ballSpeed^2
+            if currentSpeedSq > desiredSpeedSq * 1.1 then local ratio = math.sqrt(desiredSpeedSq / currentSpeedSq); ball.dx = ball.dx * ratio; ball.dy = ball.dy * ratio end
+        end
+        for i = #bricks, 1, -1 do
+            local brick = bricks[i]
+            if brick.active then
+                if ball.x + ball.radius > brick.x and ball.x - ball.radius < brick.x + brick.width and ball.y + ball.radius > brick.y and ball.y - ball.radius < brick.y + brick.height then
+                    brick.active = false; bricksRemaining = bricksRemaining - 1; score = score + 10
+                    local overlapX1=(ball.x+ball.radius)-brick.x; local overlapX2=(brick.x+brick.width)-(ball.x-ball.radius); local overlapY1=(ball.y+ball.radius)-brick.y; local overlapY2=(brick.y+brick.height)-(ball.y-ball.radius)
+                    local minOverlapX=math.min(overlapX1, overlapX2); local minOverlapY=math.min(overlapY1, overlapY2)
+                    if minOverlapX < minOverlapY then if (ball.dx > 0 and overlapX1 < overlapX2) or (ball.dx < 0 and overlapX2 < overlapX1) then ball.dx = -ball.dx; ball.x=ball.x+(ball.dx>0 and minOverlapX or -minOverlapX)*0.1 end
+                    else if (ball.dy > 0 and overlapY1 < overlapY2) or (ball.dy < 0 and overlapY2 < overlapY1) then ball.dy = -ball.dy; ball.y=ball.y+(ball.dy>0 and minOverlapY or -minOverlapY)*0.1 end end
+                    if bricksRemaining <= 0 then gameState = "win" end; break
+                end
+            end
+        end
+        if ball.y - ball.radius > SCREEN_H then lives = lives - 1; if lives <= 0 then gameState = "gameOver" else resetBall() end end
+    elseif gameState == "gameOver" or gameState == "win" then
+        if buttonPressed then gameState = "start" end
+    end
+
+    _vc:Clear(COLOR_BG)
+
+    if gameState == "start" then
+        drawCenteredText(math.floor(SCREEN_H / 2) - 10, "RETRO BREAKOUT", COLOR_TEXT)
+        drawCenteredText(math.floor(SCREEN_H / 2) + 10, "Press Button to Start", COLOR_TEXT)
+    elseif gameState == "playing" then
+        local p1 = vec2(math.floor(paddle.x), math.floor(paddle.y))
+        local p2 = vec2(p1.X + paddle.width, p1.Y + paddle.height)
+        _vc:FillRect(p1, p2, COLOR_PADDLE)
+
+        _vc:FillCircle(vec2(math.floor(ball.x), math.floor(ball.y)), ball.radius, COLOR_BALL)
+
+        for i, brick in ipairs(bricks) do
+            if brick.active then
+                local brickPos1 = vec2(math.floor(brick.x), math.floor(brick.y))
+                local brickPos2 = vec2(brickPos1.X + brick.width, brickPos1.Y + brick.height)
+                _vc:FillRect(brickPos1, brickPos2, brick.color)
+            end
+        end
+
+        _vc:DrawText(vec2(5, 5), standardFont, "Score: " .. score, COLOR_TEXT, COLOR_TEXT_BG)
+        _vc:DrawText(vec2(5, 15), standardFont, "Lives: " .. lives, COLOR_TEXT, COLOR_TEXT_BG)
+
+        if _lcd then _lcd.Text = string.format("Score:%d Lives:%d", score, lives) end
+    elseif gameState == "gameOver" then
+        drawCenteredText(math.floor(SCREEN_H / 2) - 10, "GAME OVER", COLOR_GAMEOVER)
+        drawCenteredText(math.floor(SCREEN_H / 2) + 10, "Score: " .. score, COLOR_TEXT)
+        drawCenteredText(math.floor(SCREEN_H / 2) + 30, "Press Button", COLOR_TEXT)
+        if _lcd then _lcd.Text = "GAME OVER Sc:"..score end
+    elseif gameState == "win" then
+        drawCenteredText(math.floor(SCREEN_H / 2) - 10, "YOU WIN!", COLOR_WIN)
+        drawCenteredText(math.floor(SCREEN_H / 2) + 10, "Score: " .. score, COLOR_TEXT)
+        drawCenteredText(math.floor(SCREEN_H / 2) + 30, "Press Button", COLOR_TEXT)
+        if _lcd then _lcd.Text = "YOU WIN! Sc:"..score end
+    end
+end

@@ -1,0 +1,296 @@
+# Retrogadget Lua Scripting Cheat Sheet (v20 - Prioritize Top-Level Init)
+
+**Goal:** Provide reliable guidelines for Lua scripting in Retrogadget, optimized for AI understanding and code generation, based on documentation, user testing, and a working example. Prioritizes simplest initialization methods first.
+
+## Environment
+
+*   **Engine:** Retrogadget Game
+*   **Language:** Luau (based on `Lua 5.1` syntax)
+*   **Execution Context:** Scripts run attached to a `Lua Controller` component.
+
+## Core Script Structure & Execution
+
+1.  **Main Script File:** Code resides in a `.lua` file (e.g., `my_script.lua`).
+2.  **Execution Flow:**
+    *   **Top Level:** Runs **once** on script load/simulation start. **(Primary location for initialization - see below)**.
+    *   **`onInit()`:** Optional callback function. `[STATUS]` Intended for initialization, but potentially unreliable (`[USER_CONFIRMED]`). See Initialization section.
+    *   **`update(dt)`:** Optional callback function. Runs every frame. Main loop.
+    *   **`eventChannelN(sender, arg)`:** Optional callbacks for channel input.
+
+### Initialization: Where to Put One-Time Setup Code
+
+**1. Top Level (Recommended First Approach):**
+
+*   `[BEHAVIOR]` Code here runs **once** when the script loads, very early in the gadget startup.
+*   `[USE_CASE_1]` **Ideal for setup NOT needing `gdt` access:** Defining constants, helper functions, `require` statements, initializing non-component-dependent state tables.
+    ```lua
+    -- [EXAMPLE] gdt-independent setup
+    local MAX_SCORE = 1000
+    local function calculate_bounds(w, h) return { w = w, h = h} end
+    local gameState = { level = 1 }
+    print("Constants and helpers defined.")
+    ```
+*   `[USE_CASE_2]` **Attempting setup REQUIRING `gdt` access:** Getting component references (`_vc = gdt.VideoChip0`), reading initial properties, loading assets (`standardFont = gdt.ROM...`).
+    *   `[STATUS]` `[USER_TESTED]` Simple component access (e.g., `gdt.CPU0`) *may* succeed at the top level, but component properties might hold initial/default values (e.g., `gdt.CPU0.Time` might be `0`).
+    *   `[WARNING]` More complex components (like `VideoChipN`) or assets (`ROM` contents) might not be fully initialized this early, leading to errors or incorrect data (e.g., wrong screen dimensions, font not loaded).
+    *   `[RECOMMENDATION]` **Use `pcall` for safety** when accessing `gdt` at the top level to prevent script crashes if a component isn't ready. Check the return status and handle potential failures gracefully.
+
+    ```lua
+    -- [EXAMPLE] Attempting gdt access at top level (use pcall!)
+    local _vc = nil
+    local _cpu = nil
+    local topLevelTime = -1 -- Default error value
+
+    local initSuccess_VC, vcRef = pcall(function() return gdt.VideoChip0 end)
+    if initSuccess_VC then _vc = vcRef else print("[WARN] VideoChip0 access failed at top level.") end
+
+    local initSuccess_CPU, cpuRef = pcall(function() return gdt.CPU0 end)
+    if initSuccess_CPU then
+        _cpu = cpuRef
+        local timeSuccess, timeVal = pcall(function() return _cpu.Time end)
+        if timeSuccess then topLevelTime = timeVal else print("[WARN] _cpu.Time access failed at top level.") end
+    else
+        print("[WARN] CPU0 access failed at top level.")
+    end
+
+    print("Top-level gdt access attempted. Initial Time reported:", topLevelTime)
+    -- NOTE: _vc might still be nil here, or its .Width might be wrong!
+    ```
+
+**2. `update()` Flag Pattern (Robust Fallback / Alternative):**
+
+*   `[USE_CASE]` Use this method **IF** top-level initialization:
+    *   Causes errors (even with `pcall`) for specific components/assets.
+    *   Returns incorrect initial values (e.g., screen dimensions needed before first draw).
+    *   Needs to rely on assets being fully loaded from `gdt.ROM`.
+    *   Requires a non-zero simulation time (`gdt.CPU0.Time`) immediately.
+*   `[BEHAVIOR]` Delays the `gdt`-dependent parts of initialization until the first frame(s) of `update()`, ensuring components and assets are more likely to be fully ready and provide correct values.
+*   `[PATTERN]` See example in [previous versions](!placeholder-for-v19-init-example) or the Breakout example below. Involves a flag (`local initialized = false`) and a function (`performInitialization()`) called at the start of `update()` until the flag is true.
+
+**3. `onInit()` (Use with Caution):**
+
+*   `[INTENDED_BEHAVIOR]` Engine function called once, supposedly when `gdt` is ready.
+*   `[WARNING]` `[USER_CONFIRMED]` May not execute reliably in all scenarios. Prefer Top Level (with `pcall`) or the `update()` pattern unless `onInit()` is proven reliable for your needs.
+
+---
+*(Rest of the cheat sheet sections: Accessing Gadget Components, Common Component APIs, Time & Frame Rate, Input Handling, Drawing, Networking, Data Types, Vector Math, Luau Syntax, Type Annotations, Standard Libraries, External Libraries, OOP, Accessing Assets, Persistence, Common Patterns, Error Handling, Known Limitations remain the same as v19 AI-Friendly version)*
+---
+
+## Example: Breakout Game (Uncommented Code - Using `update()` Flag Init)
+
+`[NOTE]` This example uses the `update()` flag pattern for initialization because it needs screen dimensions from `VideoChip0` and the font from `gdt.ROM` reliably before starting the game logic and drawing. If only `gdt.CPU0.Time` were needed, top-level access with `pcall` *might* have been sufficient, but this approach is safer for graphics/asset dependencies.
+
+```lua
+-- [EXAMPLE_GAME] Breakout using update() flag initialization
+
+local _vc = nil
+local _cpu = nil
+local _slider = nil
+local _button = nil
+local _rom = nil
+local _lcd = nil
+
+local standardFont = nil
+
+local SCREEN_W = 128
+local SCREEN_H = 128
+
+local PADDLE_WIDTH = 24
+local PADDLE_HEIGHT = 4
+local PADDLE_Y_OFFSET = 8
+local BALL_RADIUS = 2
+local BRICK_ROWS = 4
+local BRICKS_PER_ROW = 8
+local BRICK_WIDTH = 14
+local BRICK_HEIGHT = 6
+local BRICK_HPADDING = 1
+local BRICK_VPADDING = 2
+local BRICK_AREA_TOP_MARGIN = 20
+local INITIAL_LIVES = 3
+
+local COLOR_BG = color.black
+local COLOR_PADDLE = color.blue
+local COLOR_BALL = color.white
+local COLOR_TEXT = color.yellow
+local COLOR_GAMEOVER = color.red
+local COLOR_WIN = color.green
+local COLOR_TEXT_BG = color.clear
+local BRICK_COLORS = {
+    ColorRGBA(200, 70, 70, 255),
+    ColorRGBA(70, 200, 70, 255),
+    ColorRGBA(70, 70, 200, 255),
+    ColorRGBA(200, 200, 70, 255),
+}
+
+local gameState = "init" -- Start in 'init' state until initialized
+local score = 0
+local lives = INITIAL_LIVES
+local bricks = {}
+local bricksRemaining = 0
+
+local paddle = { x = 0, y = 0, width = PADDLE_WIDTH, height = PADDLE_HEIGHT }
+local ball = { x = 0, y = 0, radius = BALL_RADIUS, dx = 0, dy = 0 }
+local ballSpeed = 60
+
+local initialized = false -- Initialization flag
+
+local function drawCenteredText(y, text, textColor)
+    if not standardFont then return end
+    local textWidth = string.len(text) * 6
+    local x = math.floor((SCREEN_W - textWidth) / 2)
+    if x < 0 then x = 0 end
+    _vc:DrawText(vec2(x, y), standardFont, text, textColor, COLOR_TEXT_BG)
+end
+
+local function resetBall()
+    ball.x = paddle.x + paddle.width / 2
+    ball.y = paddle.y - ball.radius - 1
+    ball.dx = (math.random() > 0.5) and 1 or -1
+    ball.dy = -1
+    local len = math.sqrt(ball.dx^2 + ball.dy^2)
+    if len > 1e-6 then
+        ball.dx = ball.dx / len * ballSpeed
+        ball.dy = ball.dy / len * ballSpeed
+    else
+        ball.dx = 0; ball.dy = -ballSpeed
+    end
+end
+
+local function setupLevel()
+    bricks = {}; bricksRemaining = 0; score = 0; lives = INITIAL_LIVES
+    local totalBrickRowWidth = (BRICKS_PER_ROW * BRICK_WIDTH) + ((BRICKS_PER_ROW - 1) * BRICK_HPADDING)
+    local startX = math.floor((SCREEN_W - totalBrickRowWidth) / 2)
+    local currentY = BRICK_AREA_TOP_MARGIN
+    for r = 1, BRICK_ROWS do
+        local currentX = startX
+        local brickColor = BRICK_COLORS[((r - 1) % #BRICK_COLORS) + 1]
+        for c = 1, BRICKS_PER_ROW do
+            table.insert(bricks, {x=currentX, y=currentY, width=BRICK_WIDTH, height=BRICK_HEIGHT, color=brickColor, active=true})
+            bricksRemaining = bricksRemaining + 1
+            currentX = currentX + BRICK_WIDTH + BRICK_HPADDING
+        end
+        currentY = currentY + BRICK_HEIGHT + BRICK_VPADDING
+    end
+    paddle.x = math.floor((SCREEN_W - paddle.width) / 2)
+    paddle.y = SCREEN_H - PADDLE_HEIGHT - PADDLE_Y_OFFSET
+    resetBall()
+    gameState = "playing"
+end
+
+local function performInitialization() -- Initialization function called from update()
+    if initialized then return end
+    print("Breakout: Initializing via update()...")
+    _vc = gdt.VideoChip0; _cpu = gdt.CPU0; _slider = gdt.Slider0; _button = gdt.LedButton0; _rom = gdt.ROM; _lcd = gdt.Lcd0
+
+    if not _vc then print("[Init Wait] VideoChip0"); return end
+    if not _cpu then print("[Init Wait] CPU0"); return end
+    if not _slider then print("[Init Wait] Slider0"); return end
+    if not _button then print("[Init Wait] LedButton0"); return end
+    if not _rom then print("[Init Wait] ROM"); return end
+
+    -- Attempt to get font, might require ROM to be fully ready
+    local fontSuccess, fontRef = pcall(function() return _rom.System.SpriteSheets["StandardFont"] end)
+    if not fontSuccess or not fontRef then
+        print("[Init Wait] StandardFont not ready in ROM.")
+        return -- Font not available yet, try again next frame
+    end
+    standardFont = fontRef
+
+    -- Attempt to get screen dimensions, might require VideoChip to be fully ready
+    local dimsSuccess, width = pcall(function() return _vc.Width end)
+    if not dimsSuccess then print("[Init Wait] _vc.Width not ready."); return end
+    local height = _vc.Height -- Assume height is ready if width is
+    SCREEN_W = width; SCREEN_H = height
+
+    -- Seed random now that CPU is confirmed available
+    if _cpu then math.randomseed(_cpu.Time) else math.randomseed(0); print("[Warning] CPU0 unavailable for random seed during init.") end
+
+    paddle.x = math.floor((SCREEN_W - paddle.width) / 2)
+    paddle.y = SCREEN_H - PADDLE_HEIGHT - PADDLE_Y_OFFSET
+
+    print("Breakout: Initialization Complete. Screen: " .. SCREEN_W .. "x" .. SCREEN_H)
+    initialized = true
+    gameState = "start" -- Move to start screen now that init is done
+end
+
+
+function update(dt)
+    performInitialization() -- Try to initialize if not already done
+    if not initialized then
+        if _vc then _vc:Clear(color.gray) end -- Optional: Show loading screen
+        return -- Skip game logic until initialized
+    end
+
+    -- Normal dt check
+    if type(dt) ~= "number" or dt <= 0 or dt > 0.1 then dt = 1 / 60 end
+
+    -- Component references (_slider, _button) are now safe to use
+    local sliderValue = _slider.Value
+    local buttonPressed = _button.ButtonDown
+
+    -- Game State Logic
+    if gameState == "start" then
+        if buttonPressed then setupLevel() end
+    elseif gameState == "playing" then
+        paddle.x = math.floor((sliderValue / 100) * (SCREEN_W - paddle.width))
+        ball.x = ball.x + ball.dx * dt; ball.y = ball.y + ball.dy * dt
+        if ball.x - ball.radius < 0 then ball.x = ball.radius; ball.dx = -ball.dx end
+        if ball.x + ball.radius > SCREEN_W then ball.x = SCREEN_W - ball.radius; ball.dx = -ball.dx end
+        if ball.y - ball.radius < 0 then ball.y = ball.radius; ball.dy = -ball.dy end
+        if ball.dy > 0 and ball.y + ball.radius >= paddle.y and ball.y - ball.radius < paddle.y + paddle.height and ball.x + ball.radius >= paddle.x and ball.x - ball.radius <= paddle.x + paddle.width then
+            ball.y = paddle.y - ball.radius; ball.dy = -ball.dy
+            local hitPos = (ball.x - (paddle.x + paddle.width / 2)) / (paddle.width / 2); ball.dx = hitPos * ballSpeed * 1.2
+            local currentSpeedSq = ball.dx^2 + ball.dy^2; local desiredSpeedSq = ballSpeed^2
+            if currentSpeedSq > desiredSpeedSq * 1.1 then local ratio = math.sqrt(desiredSpeedSq / currentSpeedSq); ball.dx = ball.dx * ratio; ball.dy = ball.dy * ratio end
+        end
+        for i = #bricks, 1, -1 do
+            local brick = bricks[i]
+            if brick.active then
+                if ball.x + ball.radius > brick.x and ball.x - ball.radius < brick.x + brick.width and ball.y + ball.radius > brick.y and ball.y - ball.radius < brick.y + brick.height then
+                    brick.active = false; bricksRemaining = bricksRemaining - 1; score = score + 10
+                    local overlapX1=(ball.x+ball.radius)-brick.x; local overlapX2=(brick.x+brick.width)-(ball.x-ball.radius); local overlapY1=(ball.y+ball.radius)-brick.y; local overlapY2=(brick.y+brick.height)-(ball.y-ball.radius)
+                    local minOverlapX=math.min(overlapX1, overlapX2); local minOverlapY=math.min(overlapY1, overlapY2)
+                    if minOverlapX < minOverlapY then if (ball.dx > 0 and overlapX1 < overlapX2) or (ball.dx < 0 and overlapX2 < overlapX1) then ball.dx = -ball.dx; ball.x=ball.x+(ball.dx>0 and minOverlapX or -minOverlapX)*0.1 end
+                    else if (ball.dy > 0 and overlapY1 < overlapY2) or (ball.dy < 0 and overlapY2 < overlapY1) then ball.dy = -ball.dy; ball.y=ball.y+(ball.dy>0 and minOverlapY or -minOverlapY)*0.1 end end
+                    if bricksRemaining <= 0 then gameState = "win" end; break
+                end
+            end
+        end
+        if ball.y - ball.radius > SCREEN_H then lives = lives - 1; if lives <= 0 then gameState = "gameOver" else resetBall() end end
+    elseif gameState == "gameOver" or gameState == "win" then
+        if buttonPressed then gameState = "start" end
+    end
+
+    -- Drawing (safe to use _vc and standardFont now)
+    _vc:Clear(COLOR_BG)
+
+    if gameState == "start" then
+        drawCenteredText(math.floor(SCREEN_H / 2) - 10, "RETRO BREAKOUT", COLOR_TEXT)
+        drawCenteredText(math.floor(SCREEN_H / 2) + 10, "Press Button to Start", COLOR_TEXT)
+    elseif gameState == "playing" then
+        local p1 = vec2(math.floor(paddle.x), math.floor(paddle.y))
+        local p2 = vec2(p1.X + paddle.width, p1.Y + paddle.height)
+        _vc:FillRect(p1, p2, COLOR_PADDLE)
+        _vc:FillCircle(vec2(math.floor(ball.x), math.floor(ball.y)), ball.radius, COLOR_BALL)
+        for i, brick in ipairs(bricks) do
+            if brick.active then
+                local brickPos1 = vec2(math.floor(brick.x), math.floor(brick.y))
+                local brickPos2 = vec2(brickPos1.X + brick.width, brickPos1.Y + brick.height)
+                _vc:FillRect(brickPos1, brickPos2, brick.color)
+            end
+        end
+        _vc:DrawText(vec2(5, 5), standardFont, "Score: " .. score, COLOR_TEXT, COLOR_TEXT_BG)
+        _vc:DrawText(vec2(5, 15), standardFont, "Lives: " .. lives, COLOR_TEXT, COLOR_TEXT_BG)
+        if _lcd then _lcd.Text = string.format("Score:%d Lives:%d", score, lives) end
+    elseif gameState == "gameOver" then
+        drawCenteredText(math.floor(SCREEN_H / 2) - 10, "GAME OVER", COLOR_GAMEOVER)
+        drawCenteredText(math.floor(SCREEN_H / 2) + 10, "Score: " .. score, COLOR_TEXT)
+        drawCenteredText(math.floor(SCREEN_H / 2) + 30, "Press Button", COLOR_TEXT)
+        if _lcd then _lcd.Text = "GAME OVER Sc:"..score end
+    elseif gameState == "win" then
+        drawCenteredText(math.floor(SCREEN_H / 2) - 10, "YOU WIN!", COLOR_WIN)
+        drawCenteredText(math.floor(SCREEN_H / 2) + 10, "Score: " .. score, COLOR_TEXT)
+        drawCenteredText(math.floor(SCREEN_H / 2) + 30, "Press Button", COLOR_TEXT)
+        if _lcd then _lcd.Text = "YOU WIN! Sc:"..score end
+    end
+end

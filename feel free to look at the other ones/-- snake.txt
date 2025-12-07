@@ -1,0 +1,297 @@
+-- snake
+-- ==================================================
+--      Retro Snake - A Classic Arcade Game for Retrogadget (v4 - Corrected Init)
+-- ==================================================
+-- Implemented using Luau and standard Retrogadget components/API based on cheat sheet v9.
+-- v4: Corrected initialization logic to prevent instant self-collision.
+
+-- ==================================================
+-- Component References (!! CHECK GDT NAMES !!)
+-- ==================================================
+local _vc = gdt.VideoChip0
+local _cpu = gdt.CPU0
+local _stick = gdt.Stick0
+local _startButton = gdt.LedButton0 -- Used for start/restart
+local _audio = gdt.AudioChip0
+local _font = gdt.ROM.System.SpriteSheets["StandardFont"] -- Standard font
+
+-- ==================================================
+-- Game Configuration
+-- ==================================================
+local GRID_SIZE = 16       -- How many cells across/down
+-- Calculate cell dimensions based on VideoChip size
+local CELL_WIDTH = _vc.Width / GRID_SIZE
+local CELL_HEIGHT = _vc.Height / GRID_SIZE
+local START_SPEED = 0.25   -- Seconds per move (Slightly slower start)
+local SPEED_INCREASE = 0.97 -- Multiplier each time food is eaten (closer to 1 = slower speed increase)
+local START_LENGTH = 3
+
+-- Colors (Using built-in constants)
+local COLOR_BACKGROUND = color.black
+local COLOR_SNAKE = color.green
+local COLOR_FOOD = color.red
+local COLOR_WALL = color.gray -- Optional border
+local COLOR_TEXT = color.white
+local COLOR_GAMEOVER = color.red
+local COLOR_START = color.yellow
+local COLOR_UI_BG = ColorRGBA(0, 0, 0, 150) -- Semi-transparent black for text background
+
+-- Audio Channels
+local SND_EAT = 1
+local SND_DIE = 2
+local SND_START = 3
+
+-- ==================================================
+-- Game State Variables
+-- ==================================================
+local gameState = "START" -- START, PLAYING, GAMEOVER
+local score = 0
+local currentSpeed = START_SPEED
+local moveTimer = 0
+
+-- Snake data
+local snakeBody = {} -- Table of vec2 grid positions, head is last element (#snakeBody)
+local direction = vec2(1, 0) -- Start moving right
+local nextDirection = vec2(1, 0) -- Input buffer
+
+-- Food data
+local foodPos = vec2(0, 0)
+
+-- ==================================================
+-- Helper Functions
+-- ==================================================
+
+-- Manual Vec2 Math
+local function vec2Equals(v1, v2)
+    if not v1 or not v2 then return false end
+    return v1.X == v2.X and v1.Y == v2.Y
+end
+
+-- Draw a filled cell on the grid
+local function drawCell(gridPos, cellColor)
+    if not gridPos then return end
+    local screenX = gridPos.X * CELL_WIDTH
+    local screenY = gridPos.Y * CELL_HEIGHT
+    -- Use floor to avoid potential rounding issues near edges
+    _vc:FillRect(vec2(math.floor(screenX), math.floor(screenY)), vec2(math.floor(screenX + CELL_WIDTH - 1), math.floor(screenY + CELL_HEIGHT - 1)), cellColor)
+end
+
+-- Spawn food at a random empty location
+local function spawnFood()
+    local validPosition = false
+    local potentialPos
+    local attempts = 0
+    local maxAttempts = GRID_SIZE * GRID_SIZE -- Prevent infinite loop if grid is full
+    while not validPosition and attempts < maxAttempts do
+        attempts = attempts + 1
+        potentialPos = vec2(math.random(0, GRID_SIZE - 1), math.random(0, GRID_SIZE - 1))
+        validPosition = true -- Assume valid initially
+        -- Check against snake body
+        for i, segment in ipairs(snakeBody) do
+            if vec2Equals(potentialPos, segment) then
+                validPosition = false
+                break -- No need to check further
+            end
+        end
+    end
+    -- If we couldn't find a spot (unlikely unless snake is huge), place at 0,0
+    if attempts >= maxAttempts then
+        print("Warning: Could not find empty spot for food!")
+        potentialPos = vec2(0,0)
+    end
+    foodPos = potentialPos
+end
+
+-- Reset game variables to starting state (CORRECTED Initialization Logic)
+local function resetGame()
+    print("Resetting game...")
+    score = 0
+    currentSpeed = START_SPEED
+    moveTimer = 0
+    direction = vec2(1, 0) -- Start moving right
+    nextDirection = vec2(1, 0)
+    snakeBody = {} -- Clear the existing body
+
+    -- Start position near center-left
+    local startX = math.floor(GRID_SIZE / 4)
+    local startY = math.floor(GRID_SIZE / 2)
+
+    -- Build snake from TAIL to HEAD, appending each segment to the END of the table.
+    -- This ensures the head is at index #snakeBody.
+    for i = START_LENGTH - 1, 0, -1 do
+        -- Example: START_LENGTH=3. Loop runs i=2, i=1, i=0.
+        -- i=2: Calculates tail position (startX - 2, startY) and inserts it. body=[{tail}]
+        -- i=1: Calculates mid position (startX - 1, startY) and inserts it. body=[{tail}, {mid}]
+        -- i=0: Calculates head position (startX - 0, startY) and inserts it. body=[{tail}, {mid}, {head}]
+        table.insert(snakeBody, vec2(startX - i, startY))
+    end
+
+    spawnFood()
+    gameState = "PLAYING"
+    _startButton.LedState = true -- Indicate playing
+    -- Play start sound only if not already playing on that channel (optional safety)
+    if not _audio:IsPlaying(SND_START) then
+       _audio:Play(gdt.ROM.User.AudioSamples["start.wav"], SND_START) -- !! Replace sound name if needed !!
+    end
+    print("Game state set to PLAYING. Initial head:", snakeBody[#snakeBody].X, snakeBody[#snakeBody].Y)
+end
+
+
+-- ==================================================
+-- Main Update Logic
+-- ==================================================
+
+function update()
+    local dt = _cpu.DeltaTime
+    if dt <= 0 or dt > 0.1 then dt = 1/60 end -- Clamp delta time
+
+    -- // 1. Handle Input (Inverted Vertical Direction Fixed) //
+
+    -- Read stick input
+    local stickX = _stick.X / 100 -- Normalize to -1 to 1
+    local stickY = _stick.Y / 100 -- Normalize to -1 to 1
+    local inputThreshold = 0.5 -- How far stick needs to move
+
+    local requestedDir = nil
+    if math.abs(stickX) > inputThreshold or math.abs(stickY) > inputThreshold then
+        if math.abs(stickX) > math.abs(stickY) then
+            -- Horizontal dominant
+            requestedDir = vec2(math.sign(stickX), 0)
+        else
+            -- Vertical dominant
+            -- FIX: Invert Y direction from stick input
+            requestedDir = vec2(0, -math.sign(stickY))
+        end
+    end
+
+    -- Buffer the next direction, preventing reversal (only if PLAYING)
+    if gameState == "PLAYING" and requestedDir then
+        -- Check if the requested direction is opposite to the current direction
+        local isOpposite = (requestedDir.X == -direction.X and requestedDir.X ~= 0) or (requestedDir.Y == -direction.Y and requestedDir.Y ~= 0)
+        if not isOpposite then
+            nextDirection = requestedDir
+        end
+    end
+
+    -- Handle Start/Restart Button
+    if _startButton.ButtonDown then
+        if gameState == "START" or gameState == "GAMEOVER" then
+            resetGame()
+        end
+    end
+
+    -- // 2. Update Game State (if PLAYING) //
+    if gameState == "PLAYING" then
+        moveTimer = moveTimer + dt
+
+        -- Check if it's time to move
+        if moveTimer >= currentSpeed then
+            moveTimer = moveTimer - currentSpeed -- Reset timer preserving overshoot
+
+            -- Update direction from buffer
+            direction = nextDirection
+
+            -- Calculate new head position (Head is at the end of the table)
+            local currentHead = snakeBody[#snakeBody]
+            local newHead = vec2(currentHead.X + direction.X, currentHead.Y + direction.Y)
+
+            local collided = false -- Flag to check if collision occurred this step
+
+            -- Check Wall Collision
+            if newHead.X < 0 or newHead.X >= GRID_SIZE or newHead.Y < 0 or newHead.Y >= GRID_SIZE then
+                collided = true
+                print("Game Over: Wall collision")
+            end
+
+            -- Check Self Collision (only if not already collided with wall)
+            if not collided then
+                -- Check against all segments EXCEPT the very last one (which is the current head moving away)
+                for i = 1, #snakeBody - 1 do
+                    if vec2Equals(newHead, snakeBody[i]) then
+                        collided = true
+                        print("Game Over: Self collision")
+                        break -- Stop checking self collision
+                    end
+                end
+            end
+
+            -- Handle Collision Outcome OR Move Snake
+            if collided then
+                gameState = "GAMEOVER"
+                _audio:Play(gdt.ROM.User.AudioSamples["die.wav"], SND_DIE) -- !! Replace sound name if needed !!
+                _startButton.LedState = false
+            else
+                -- No collision: Move Snake
+                table.insert(snakeBody, newHead) -- Add new head to the END
+
+                -- Check Food Collision
+                if vec2Equals(newHead, foodPos) then
+                    -- Eat food: Grow (don't remove tail), score up, speed up, new food
+                    score = score + 10
+                    currentSpeed = currentSpeed * SPEED_INCREASE
+                    spawnFood()
+                    _audio:Play(gdt.ROM.User.AudioSamples["eat.wav"], SND_EAT) -- !! Replace sound name if needed !!
+                else
+                    -- Didn't eat: Remove tail (remove from the START)
+                    table.remove(snakeBody, 1)
+                end
+            end
+        end -- End if time to move
+    end -- End if PLAYING
+
+    -- // 3. Drawing //
+    _vc:Clear(COLOR_BACKGROUND)
+
+    -- Optional: Draw border
+    -- _vc:DrawRect(vec2(0,0), vec2(_vc.Width-1, _vc.Height-1), COLOR_WALL)
+
+    if gameState == "PLAYING" then
+        -- Draw snake body
+        for i, segment in ipairs(snakeBody) do
+            drawCell(segment, COLOR_SNAKE)
+        end
+        -- Draw food
+        drawCell(foodPos, COLOR_FOOD)
+
+        -- Draw Score
+        if _font then
+            local scoreText = string.format("Score: %d", score)
+             _vc:DrawText(vec2(5, 5), _font, scoreText, COLOR_TEXT, COLOR_UI_BG)
+        end
+
+    elseif gameState == "START" then
+        -- Draw Start Message
+        if _font then
+            _vc:DrawText(vec2(15, 50), _font, "Retro Snake!", COLOR_START, COLOR_UI_BG)
+            _vc:DrawText(vec2(10, 70), _font, "Use Stick to Move", COLOR_TEXT, COLOR_UI_BG)
+            _vc:DrawText(vec2(10, 85), _font, "Press Button to Start", COLOR_TEXT, COLOR_UI_BG)
+        end
+
+    elseif gameState == "GAMEOVER" then
+        -- Draw Game Over and Final Score
+        if _font then
+            _vc:DrawText(vec2(35, 50), _font, "GAME OVER", COLOR_GAMEOVER, COLOR_UI_BG)
+            local scoreText = string.format("Final Score: %d", score)
+            _vc:DrawText(vec2(20, 70), _font, scoreText, COLOR_TEXT, COLOR_UI_BG)
+            _vc:DrawText(vec2(10, 90), _font, "Press Button to Retry", COLOR_START, COLOR_UI_BG)
+        end
+         -- Flash LED on game over? (Optional)
+         -- _startButton.LedState = math.fmod(_cpu.Time * 2, 2) < 1
+
+    end
+
+end -- End update function
+
+-- ==================================================
+-- Initial Setup (Runs once at top level)
+-- ==================================================
+print("Retro Snake Script Loaded (v4 - Corrected Init).")
+-- Set initial audio volumes
+_audio:SetChannelVolume(70, SND_EAT)
+_audio:SetChannelVolume(80, SND_DIE)
+_audio:SetChannelVolume(60, SND_START)
+
+-- Make sure font exists before trying to use it later (optional safety)
+if not _font then
+    print("Error: StandardFont not found!")
+end

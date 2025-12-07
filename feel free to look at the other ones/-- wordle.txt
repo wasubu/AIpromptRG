@@ -1,0 +1,260 @@
+-- wordle
+-- ==================================================
+--      Retro Wordle - DPad Edition (v4 - Final Fix)
+-- ==================================================
+-- Uses Luau, DPad input, explicit colors, dynamic layout, standard components.
+-- v4: Fixed letters not showing in the current typing row.
+
+-- ==================================================
+-- Component References (!! CHECK GDT NAMES !!)
+-- ==================================================
+local _vc = gdt.VideoChip0
+local _cpu = gdt.CPU0
+local _dpad = gdt.DPad0
+local _enterButton = gdt.LedButton0 -- Specific button for Enter/Select
+local _backButton = gdt.LedButton1 -- Specific button for Backspace
+local _font = gdt.ROM.System.SpriteSheets["StandardFont"]
+
+-- ==================================================
+-- Color Constants (Explicitly Defined with Alpha)
+-- !! Ensure ColorRGBA is the correct constructor name !!
+-- ==================================================
+local COLOR_BLACK = ColorRGBA(0, 0, 0, 255)
+local COLOR_WHITE = ColorRGBA(255, 255, 255, 255)
+local COLOR_GRAY = ColorRGBA(128, 128, 128, 255)
+local COLOR_GREEN = ColorRGBA(83, 141, 78, 255) -- Wordle Green
+local COLOR_YELLOW = ColorRGBA(181, 159, 59, 255) -- Wordle Yellow
+local COLOR_RED = ColorRGBA(255, 0, 0, 255)
+local COLOR_CYAN = ColorRGBA(0, 255, 255, 255)
+local COLOR_CLEAR = ColorRGBA(0, 0, 0, 0) -- Fully transparent
+
+-- Game Specific Colors
+local COLOR_BACKGROUND = COLOR_BLACK
+local COLOR_DEFAULT_BOX = COLOR_GRAY
+local COLOR_TYPING_BOX = COLOR_WHITE     -- Outline color for active row box
+local COLOR_CORRECT = COLOR_GREEN
+local COLOR_PRESENT = COLOR_YELLOW
+local COLOR_ABSENT = ColorRGBA(50, 50, 55, 255) -- Dark Gray for absent
+local COLOR_TEXT_LIGHT = COLOR_WHITE     -- Text on dark backgrounds
+local COLOR_TEXT_DARK = COLOR_BLACK      -- Text on light backgrounds (typing row, yellow, green)
+local COLOR_MESSAGE = COLOR_WHITE
+local COLOR_WIN = COLOR_GREEN
+local COLOR_LOSE = COLOR_RED
+local COLOR_KEY_DEFAULT = COLOR_GRAY
+local COLOR_KEY_SELECTED = COLOR_CYAN
+local COLOR_KEY_USED_ABSENT = COLOR_ABSENT
+local COLOR_KEY_USED_PRESENT = COLOR_PRESENT
+local COLOR_KEY_USED_CORRECT = COLOR_CORRECT
+local COLOR_UI_BG = ColorRGBA(0, 0, 0, 150)
+local COLOR_START = COLOR_YELLOW
+
+-- ==================================================
+-- Game Configuration
+-- ==================================================
+local WORD_LENGTH = 5
+local MAX_GUESSES = 6
+local GRID_ROWS = MAX_GUESSES
+local GRID_COLS = WORD_LENGTH
+
+-- Drawing Layout (Calculated based on dynamic screen size)
+local CELL_SIZE = math.floor(math.min(_vc.Width / (GRID_COLS + 2), _vc.Height / (GRID_ROWS + 4)))
+CELL_SIZE = math.max(10, CELL_SIZE)
+local PADDING = math.floor(CELL_SIZE * 0.15)
+local GRID_TOTAL_WIDTH = GRID_COLS * CELL_SIZE + (GRID_COLS - 1) * PADDING
+local START_X = math.floor((_vc.Width - GRID_TOTAL_WIDTH) / 2)
+local START_Y = 5
+
+-- Virtual Keyboard Layout
+local keyboardLayout = { "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM" }
+local KEY_ROWS = #keyboardLayout
+local KEY_COLS_MAX = #keyboardLayout[1]
+local KEY_WIDTH = math.floor(_vc.Width / (KEY_COLS_MAX + 1))
+local KEY_HEIGHT = math.floor(KEY_WIDTH * 0.8)
+local KEY_PADDING_X = math.floor(KEY_WIDTH * 0.1)
+local KEY_PADDING_Y = KEY_PADDING_X
+local KEYBOARD_START_Y = START_Y + GRID_ROWS * (CELL_SIZE + PADDING) + math.floor(CELL_SIZE * 0.5)
+if KEYBOARD_START_Y + (KEY_ROWS + 1) * (KEY_HEIGHT + KEY_PADDING_Y) > _vc.Height then
+     KEYBOARD_START_Y = _vc.Height - (KEY_ROWS + 1.5) * (KEY_HEIGHT + KEY_PADDING_Y)
+end
+local FONT_SIZE = 8
+
+-- Feedback Codes & Word Lists
+local FB_ABSENT = 0; local FB_PRESENT = 1; local FB_CORRECT = 2
+local possibleAnswers = { "APPLE", "TABLE", "CHAIR", "MOUSE", "HOUSE", "PLANT", "WATER", "EARTH", "LIGHT", "SOUND", "TRAIN", "PLANE", "PROXY", "QUERY", "REACT", "FRAME", "WORLD", "POINT", "POWER", "SHARE" }
+local allowedGuesses = { "APPLE", "TABLE", "CHAIR", "MOUSE", "HOUSE", "PLANT", "WATER", "EARTH", "LIGHT", "SOUND", "TRAIN", "PLANE", "PROXY", "QUERY", "REACT", "FRAME", "WORLD", "POINT", "POWER", "SHARE", "ABOUT", "ALERT", "ARGUE", "BEACH", "BRAIN", "BREAD", "BRING", "BROWN", "CAMEL", "CLEAN", "CLOCK", "CLOUD", "CRANE", "DANCE", "DREAM", "DRINK", "EAGLE", "EMAIL", "EMPTY", "ENEMY", "ENJOY", "ENTRY", "EQUAL", "EXACT", "EXIST", "FIBER", "FIELD", "FIGHT", "FINAL", "FLOOR", "FOCUS", "FORCE", "FRONT", "FUNNY", "GIANT", "GLASS", "GRANT", "GRASS", "GREAT", "GROUP", "GUARD", "GUESS", "HEART", "HEAVY", "HORSE", "HOTEL", "HUMAN", "IMAGE", "INDEX", "INPUT", "ISSUE", "JUICE", "LARGE", "LAYER", "LEARN", "LEAVE", "LEGAL", "LEVEL", "LOCAL", "LOGIC", "LUCKY", "LUNCH", "MAGIC", "MAJOR", "METAL", "MONEY", "MONTH", "MOTOR", "MUSIC", "NIGHT", "NOISE", "NORTH", "NOVEL", "NURSE", "OCEAN", "OFTEN", "ORDER", "OTHER", "OWNER", "PAPER", "PARTY", "PEACE", "PHONE", "PHOTO", "PIECE", "PILOT", "PITCH", "PLACE", "PLATE", "PRIZE", "PROOF", "PROUD", "RADIO", "RAISE", "RANGE", "RATIO", "REACH", "REPLY", "RIGHT", "RIVER", "ROUND", "ROUTE", "SCALE", "SCOPE", "SCORE", "SENSE", "SERVE", "SHAPE", "SHEET", "SHIFT", "SHIRT", "SHOCK", "SIGHT", "SIMON", "SKILL", "SLEEP", "SMILE", "SMOKE", "SOLID", "SOLVE", "SOUTH", "SPACE", "SPEND", "SPOON", "STAFF", "STAGE", "STAIR", "STAKE", "START", "STATE", "STEAM", "STEEL", "STICK", "STILL", "STOCK", "STONE", "STORE", "STUDY", "STUFF", "STYLE", "SUGAR", "SWEET", "TASTE", "TEACH", "THANK", "THEME", "THERE", "THING", "THINK", "TITLE", "TOTAL", "TOUCH", "TOWER", "TRACK", "TRADE", "TRICK", "TRUCK", "TRUST", "TRUTH", "UNCLE", "UNION", "UNIQUE", "UNTIL", "UPPER", "URBAN", "USAGE", "USUAL", "VALID", "VALUE", "VIDEO", "VIRUS", "VISIT", "VOICE", "WASTE", "WATCH", "WHILE", "WHITE", "WHOLE", "WOMAN", "WRITE", "WRONG", "YIELD", "YOUNG", "YOUTH" }
+
+-- ==================================================
+-- Game State Variables
+-- ==================================================
+local gameState = "START"; local targetWord = ""; local guesses = {}; local feedback = {}; local keyStatus = {}
+local currentGuess = ""; local currentRow = 0; local message = ""; local messageTimer = 0
+local keyboardRow = 0; local keyboardCol = 0; local dpadPrevX = 0; local dpadPrevY = 0
+
+-- ==================================================
+-- Helper Functions
+-- ==================================================
+local function selectTargetWord() return possibleAnswers[math.random(1, #possibleAnswers)] end
+local function isValidGuess(word) for _, validWord in ipairs(allowedGuesses) do if word == validWord then return true end end; return false end
+local function showMessage(text, duration) message = text; messageTimer = duration or 1.5 end
+
+local function processGuess(guess)
+    local guessFeedback = {}; local targetLetters = {}; local targetWordLen = #targetWord
+    for i=1,targetWordLen do guessFeedback[i]=FB_ABSENT; local char=string.sub(targetWord, i, i); targetLetters[char]=(targetLetters[char] or 0)+1 end
+    for i=1,targetWordLen do local guessChar=string.sub(guess, i, i); if guessChar==string.sub(targetWord,i,i) then guessFeedback[i]=FB_CORRECT; targetLetters[guessChar]-=1; keyStatus[guessChar]=FB_CORRECT end end
+    for i=1,targetWordLen do if guessFeedback[i]==FB_ABSENT then local guessChar=string.sub(guess,i,i); if (targetLetters[guessChar] or 0)>0 then guessFeedback[i]=FB_PRESENT; targetLetters[guessChar]-=1; if keyStatus[guessChar]~=FB_CORRECT then keyStatus[guessChar]=FB_PRESENT end else if not keyStatus[guessChar] then keyStatus[guessChar]=FB_ABSENT end end end end
+    return guessFeedback
+end
+
+local function resetGame()
+    targetWord = selectTargetWord(); print("Target:", targetWord); guesses={}; feedback={}; keyStatus={}; currentGuess=""; currentRow=0
+    message=""; messageTimer=0; keyboardRow=0; keyboardCol=0; dpadPrevX=0; dpadPrevY=0
+    gameState="PLAYING"; _enterButton.LedState = true; print("Game state set to PLAYING")
+end
+
+local function getFeedbackColor(fbCode) if fbCode==FB_CORRECT then return COLOR_CORRECT elseif fbCode==FB_PRESENT then return COLOR_PRESENT else return COLOR_ABSENT end end
+-- Text color helper - Use dark text for light backgrounds (Green/Yellow)
+local function getTextColor(bgColor) if bgColor==COLOR_CORRECT or bgColor==COLOR_PRESENT then return COLOR_TEXT_DARK else return COLOR_TEXT_LIGHT end end
+
+local function drawLetterBox(row, col, char, boxColor, textColor)
+    local x = START_X + col * (CELL_SIZE + PADDING); local y = START_Y + row * (CELL_SIZE + PADDING)
+    _vc:FillRect(vec2(x, y), vec2(x + CELL_SIZE - 1, y + CELL_SIZE - 1), boxColor)
+    if _font and char and char ~= "" then
+        local charW = 5; local fontH = FONT_SIZE; local textX = x + (CELL_SIZE - charW) / 2; local textY = y + (CELL_SIZE - fontH) / 2
+        _vc:DrawText(vec2(math.floor(textX), math.floor(textY)), _font, char, textColor, COLOR_CLEAR)
+    end
+    _vc:DrawRect(vec2(x, y), vec2(x + CELL_SIZE - 1, y + CELL_SIZE - 1), COLOR_DEFAULT_BOX)
+end
+
+local function drawKeyboard()
+    if not _font then return end
+    local totalKeyboardWidth = KEY_COLS_MAX * KEY_WIDTH + (KEY_COLS_MAX - 1) * KEY_PADDING_X
+    local keyboardStartX = math.floor((_vc.Width - totalKeyboardWidth) / 2)
+    for r = 0, KEY_ROWS - 1 do
+        local rowLayout = keyboardLayout[r + 1]; local rowLen = #rowLayout
+        local rowStartX = keyboardStartX + math.floor((KEY_COLS_MAX - rowLen) * (KEY_WIDTH + KEY_PADDING_X) / 2)
+        for c = 0, rowLen - 1 do
+            local keyChar = string.sub(rowLayout, c + 1, c + 1); local kx = rowStartX + c * (KEY_WIDTH + KEY_PADDING_X); local ky = KEYBOARD_START_Y + r * (KEY_HEIGHT + KEY_PADDING_Y)
+            local isSelected = (r == keyboardRow and c == keyboardCol); local keyColor = COLOR_KEY_DEFAULT; local keyTextColor = COLOR_TEXT_LIGHT
+            local status = keyStatus[keyChar]
+            if status == FB_CORRECT then keyColor = COLOR_KEY_USED_CORRECT; keyTextColor = getTextColor(keyColor) elseif status == FB_PRESENT then keyColor = COLOR_KEY_USED_PRESENT; keyTextColor = getTextColor(keyColor) elseif status == FB_ABSENT then keyColor = COLOR_KEY_USED_ABSENT end
+            _vc:FillRect(vec2(kx, ky), vec2(kx + KEY_WIDTH - 1, ky + KEY_HEIGHT - 1), keyColor)
+            local charW = 5; local fontH = FONT_SIZE; local textX = kx + (KEY_WIDTH - charW) / 2; local textY = ky + (KEY_HEIGHT - fontH) / 2
+            _vc:DrawText(vec2(math.floor(textX), math.floor(textY)), _font, keyChar, keyTextColor, COLOR_CLEAR)
+            local outlineColor = isSelected and COLOR_KEY_SELECTED or COLOR_DEFAULT_BOX
+            _vc:DrawRect(vec2(kx, ky), vec2(kx + KEY_WIDTH - 1, ky + KEY_HEIGHT - 1), outlineColor)
+            if isSelected then _vc:DrawRect(vec2(kx-1, ky-1), vec2(kx + KEY_WIDTH, ky + KEY_HEIGHT), outlineColor) end
+        end
+    end
+    -- Draw Enter and Backspace keys
+    local specialKeyY = KEYBOARD_START_Y + KEY_ROWS * (KEY_HEIGHT + KEY_PADDING_Y)
+    local specialKeyWidth = math.floor(KEY_WIDTH * 1.8)
+    local backspaceX = keyboardStartX
+    local enterX = keyboardStartX + totalKeyboardWidth - specialKeyWidth
+    local backSelected = (keyboardRow == KEY_ROWS and keyboardCol == 0); local backColor = COLOR_KEY_DEFAULT; local backTextColor = COLOR_TEXT_LIGHT
+    _vc:FillRect(vec2(backspaceX, specialKeyY), vec2(backspaceX + specialKeyWidth - 1, specialKeyY + KEY_HEIGHT - 1), backColor)
+    local bkTxtX = backspaceX + (specialKeyWidth - (2*5)) / 2; _vc:DrawText(vec2(math.floor(bkTxtX), specialKeyY + (KEY_HEIGHT-FONT_SIZE)/2), _font, "BK", backTextColor, COLOR_CLEAR)
+    local backOutline = backSelected and COLOR_KEY_SELECTED or COLOR_DEFAULT_BOX; _vc:DrawRect(vec2(backspaceX, specialKeyY), vec2(backspaceX + specialKeyWidth - 1, specialKeyY + KEY_HEIGHT - 1), backOutline)
+    if backSelected then _vc:DrawRect(vec2(backspaceX-1, specialKeyY-1), vec2(backspaceX + specialKeyWidth, specialKeyY + KEY_HEIGHT), backOutline) end
+
+    local enterSelected = (keyboardRow == KEY_ROWS and keyboardCol == 1); local enterColor = COLOR_KEY_DEFAULT; local enterTextColor = COLOR_TEXT_LIGHT
+    _vc:FillRect(vec2(enterX, specialKeyY), vec2(enterX + specialKeyWidth - 1, specialKeyY + KEY_HEIGHT - 1), enterColor)
+    local entTxtX = enterX + (specialKeyWidth - (3*5)) / 2; _vc:DrawText(vec2(math.floor(entTxtX), specialKeyY + (KEY_HEIGHT-FONT_SIZE)/2), _font, "ENT", enterTextColor, COLOR_CLEAR)
+    local enterOutline = enterSelected and COLOR_KEY_SELECTED or COLOR_DEFAULT_BOX; _vc:DrawRect(vec2(enterX, specialKeyY), vec2(enterX + specialKeyWidth - 1, specialKeyY + KEY_HEIGHT - 1), enterOutline)
+    if enterSelected then _vc:DrawRect(vec2(enterX-1, specialKeyY-1), vec2(enterX + specialKeyWidth, specialKeyY + KEY_HEIGHT), enterOutline) end
+end
+
+local function getSelectedKey()
+    if keyboardRow < KEY_ROWS then local rowLayout = keyboardLayout[keyboardRow + 1]; if keyboardCol >= 0 and keyboardCol < #rowLayout then return string.sub(rowLayout, keyboardCol + 1, keyboardCol + 1) end
+    elseif keyboardRow == KEY_ROWS then if keyboardCol == 0 then return "BACK" end; if keyboardCol == 1 then return "ENTER" end end
+    return nil
+end
+
+-- ==================================================
+-- Main Update Logic
+-- ==================================================
+function update()
+    local dt = _cpu.DeltaTime; if dt <= 0 or dt > 0.1 then dt = 1/60 end
+    if messageTimer > 0 then messageTimer -= dt; if messageTimer <= 0 then message = "" end end
+
+    -- // 1. Handle Input //
+    local currentX = _dpad.X; local currentY = _dpad.Y; local dx = 0; local dy = 0
+    if currentX ~= 0 and dpadPrevX == 0 then dx = currentX / 100 end
+    if currentY ~= 0 and dpadPrevY == 0 then dy = -currentY / 100 end -- Invert Y
+    dpadPrevX = currentX; dpadPrevY = currentY
+    if dx ~= 0 or dy ~= 0 then
+        if math.abs(dx) > math.abs(dy) then keyboardCol += dx else keyboardRow += dy end
+        keyboardRow = math.max(0, math.min(KEY_ROWS, keyboardRow))
+        if keyboardRow < KEY_ROWS then local rowLen = #keyboardLayout[keyboardRow + 1]; keyboardCol = math.max(0, math.min(rowLen - 1, keyboardCol)) else keyboardCol = math.max(0, math.min(1, keyboardCol)) end
+    end
+
+    local selectedKey = getSelectedKey()
+
+    if _enterButton.ButtonDown then
+        if gameState == "PLAYING" then
+            if selectedKey == "ENTER" then
+                if #currentGuess == WORD_LENGTH then
+                    if isValidGuess(currentGuess) then
+                        local guessFeedback = processGuess(currentGuess); table.insert(guesses, currentGuess); table.insert(feedback, guessFeedback)
+                        local allCorrect = true; for i=1,WORD_LENGTH do if guessFeedback[i]~=FB_CORRECT then allCorrect=false; break end end
+                        if allCorrect then gameState = "WON"; _enterButton.LedState = false; showMessage("You Win!", 5)
+                        elseif currentRow >= MAX_GUESSES - 1 then gameState = "LOST"; _enterButton.LedState = false; showMessage("Word: "..targetWord, 10)
+                        else currentRow += 1; currentGuess = "" end
+                    else showMessage("Not a valid word", 1.5) end
+                else showMessage("Not enough letters", 1.0) end
+            elseif selectedKey == "BACK" then if #currentGuess > 0 then currentGuess = string.sub(currentGuess, 1, #currentGuess - 1) end
+            elseif selectedKey then if #currentGuess < WORD_LENGTH then currentGuess ..= selectedKey end end
+        elseif gameState == "START" or gameState == "WON" or gameState == "LOST" then
+             if selectedKey == "ENTER" then resetGame() end
+        end
+    end
+
+    if _backButton.ButtonDown then if gameState == "PLAYING" and #currentGuess > 0 then currentGuess = string.sub(currentGuess, 1, #currentGuess - 1) end end
+
+    -- // 2. Drawing //
+    _vc:Clear(COLOR_BACKGROUND)
+    for r = 0, GRID_ROWS - 1 do for c = 0, GRID_COLS - 1 do
+            local char = ""; local boxColor = COLOR_DEFAULT_BOX
+            local txtColor = COLOR_TEXT_LIGHT -- Default text color for empty/default boxes
+
+            if r < currentRow then -- Completed row
+                char = string.sub(guesses[r+1], c + 1, c + 1)
+                local fb = feedback[r+1][c+1]
+                boxColor = getFeedbackColor(fb)
+                txtColor = getTextColor(boxColor) -- Update text color based on feedback
+            elseif r == currentRow and gameState == "PLAYING" then -- Current typing row
+                 boxColor = COLOR_TYPING_BOX -- Use white outline for active box background
+                 txtColor = COLOR_TEXT_DARK  -- ** FIX: Use dark text for visibility on white box **
+                 if c < #currentGuess then
+                    char = string.sub(currentGuess, c + 1, c + 1)
+                 end
+            end
+            drawLetterBox(r, c, char, boxColor, txtColor) -- Draw with correct text color
+        end end
+    drawKeyboard()
+    if message and message ~= "" and _font then local msgW = #message * 6; local msgX = (_vc.Width - msgW) / 2; local msgY = KEYBOARD_START_Y + (KEY_ROWS + 1) * (KEY_HEIGHT + KEY_PADDING_Y) + 5; if msgY + FONT_SIZE > _vc.Height then msgY = _vc.Height - FONT_SIZE - 1 end; _vc:DrawText(vec2(math.floor(msgX), math.floor(msgY)), _font, message, COLOR_MESSAGE, COLOR_UI_BG) end
+    if (gameState == "START" or gameState == "WON" or gameState == "LOST") and _font then
+        local title = ""; local prompt = ""; local titleColor = COLOR_WHITE; local finalScoreLine = ""
+        if gameState == "START" then title = "Retro Wordle"; titleColor = COLOR_START; prompt = "Use DPad, Select 'ENT', Press Enter"
+        elseif gameState == "WON" then title = "You Win!"; titleColor = COLOR_WIN; prompt = "Select 'ENT', Press Enter to Retry"; finalScoreLine = string.format("Word: %s (%d/%d)", targetWord, currentRow + 1, MAX_GUESSES)
+        elseif gameState == "LOST" then title = "Game Over"; titleColor = COLOR_LOSE; prompt = "Select 'ENT', Press Enter to Retry"; finalScoreLine = string.format("Word was: %s", targetWord) end
+        local titleW = #title * 6; local promptW = #prompt * 6; local finalScoreW = #finalScoreLine * 6
+        local textY = math.floor(_vc.Height / 2 - FONT_SIZE * 2) -- Adjusted Y position slightly higher
+        if KEYBOARD_START_Y < textY + 3 * (FONT_SIZE+2) then textY = START_Y + GRID_ROWS * (CELL_SIZE + PADDING) + 2 end -- Ensure it doesn't overlap grid if screen is short
+        textY = math.max(5, textY) -- Keep it on screen
+        _vc:DrawText(vec2(math.floor((_vc.Width-titleW)/2), textY), _font, title, titleColor, COLOR_CLEAR)
+        _vc:DrawText(vec2(math.floor((_vc.Width-promptW)/2), textY + FONT_SIZE + 2), _font, prompt, COLOR_WHITE, COLOR_CLEAR)
+        if finalScoreLine ~= "" then _vc:DrawText(vec2(math.floor((_vc.Width - finalScoreW)/2), textY + (FONT_SIZE+2)*2), _font, finalScoreLine, COLOR_WHITE, COLOR_CLEAR) end
+    end
+end
+
+-- ==================================================
+-- Initial Setup
+-- ==================================================
+print("Retro Wordle (DPad Edition v4) Script Loaded.")
+gameState = "START"
+_enterButton.LedState = true
+dpadPrevX = 0; dpadPrevY = 0
+if not _font then print("Error: StandardFont not found!") end
+-- Ensure layout constants are valid after potential adjustments
+START_X = math.max(0, START_X)
+KEYBOARD_START_Y = math.max(START_Y + GRID_ROWS * (CELL_SIZE + PADDING), KEYBOARD_START_Y)

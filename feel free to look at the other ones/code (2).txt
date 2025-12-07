@@ -1,0 +1,323 @@
+--[[
+Retrogadget Breakout Example (v17 Compliant)
+
+Controls:
+- Slider0: Move the paddle left/right.
+- Button0: Start game / Restart after Game Over or Win.
+
+Uses: VideoChip0, CPU0, Slider0, Button0, (Optional: Lcd0)
+]]
+
+-- Component References (initialized in onInit)
+local _vc = nil
+local _cpu = nil
+local _slider = nil
+local _button = nil
+local _lcd = nil -- Optional LCD
+
+-- Screen Dimensions (initialized in onInit)
+local SCREEN_W = 128
+local SCREEN_H = 128
+
+-- Game Constants
+local PADDLE_WIDTH = 24
+local PADDLE_HEIGHT = 4
+local PADDLE_Y_OFFSET = 8 -- Distance from bottom
+local BALL_RADIUS = 2
+local BRICK_ROWS = 4
+local BRICKS_PER_ROW = 8
+local BRICK_WIDTH = 14
+local BRICK_HEIGHT = 6
+local BRICK_HPADDING = 1 -- Horizontal padding between bricks
+local BRICK_VPADDING = 2 -- Vertical padding between bricks
+local BRICK_AREA_TOP_MARGIN = 20 -- Space above bricks
+local INITIAL_LIVES = 3
+
+-- Colors (Using v17 rules: built-ins and ColorRGBA constructor)
+local COLOR_BG = color.black          -- Built-in
+local COLOR_PADDLE = color.blue       -- Built-in
+local COLOR_BALL = color.white        -- Built-in
+local COLOR_TEXT = color.yellow       -- Built-in
+local COLOR_GAMEOVER = color.red      -- Built-in
+local COLOR_WIN = color.green         -- Built-in
+-- Custom Brick Colors (Need ColorRGBA as these aren't built-in constants)
+local BRICK_COLORS = {
+    ColorRGBA(200, 70, 70, 255),    -- Reddish
+    ColorRGBA(70, 200, 70, 255),    -- Greenish
+    ColorRGBA(70, 70, 200, 255),    -- Bluish
+    ColorRGBA(200, 200, 70, 255),   -- Yellowish
+}
+
+-- Game State Variables
+local gameState = "start" -- "start", "playing", "gameOver", "win"
+local score = 0
+local lives = INITIAL_LIVES
+local bricks = {} -- Table to hold brick info { x, y, width, height, color, active }
+local bricksRemaining = 0
+
+local paddle = { x = 0, y = 0, width = PADDLE_WIDTH, height = PADDLE_HEIGHT }
+local ball = { x = 0, y = 0, radius = BALL_RADIUS, dx = 0, dy = 0 }
+local ballSpeed = 60 -- pixels per second
+
+-- Helper function: Draw centered text
+local function drawCenteredText(y, text, textColor)
+    -- Estimate text width (simple approximation)
+    local textWidth = string.len(text) * 6 -- Adjust '6' based on font
+    local x = math.floor((SCREEN_W - textWidth) / 2)
+    _vc:DrawText(text, vec2(x, y), textColor, 1) -- Assuming font size 1
+end
+
+-- Helper function: Reset ball position and velocity
+local function resetBall()
+    ball.x = paddle.x + paddle.width / 2
+    ball.y = paddle.y - ball.radius - 1
+    -- Random initial horizontal direction
+    ball.dx = (math.random() > 0.5) and 1 or -1
+    ball.dy = -1 -- Start moving up
+    -- Normalize velocity vector and apply speed
+    local len = math.sqrt(ball.dx^2 + ball.dy^2) -- Simple length calculation
+    ball.dx = ball.dx / len * ballSpeed
+    ball.dy = ball.dy / len * ballSpeed
+end
+
+-- Helper function: Set up the brick layout
+local function setupLevel()
+    bricks = {} -- Clear existing bricks
+    bricksRemaining = 0
+    score = 0
+    lives = INITIAL_LIVES
+
+    local totalBrickRowWidth = (BRICKS_PER_ROW * BRICK_WIDTH) + ((BRICKS_PER_ROW - 1) * BRICK_HPADDING)
+    local startX = math.floor((SCREEN_W - totalBrickRowWidth) / 2)
+    local currentY = BRICK_AREA_TOP_MARGIN
+
+    for r = 1, BRICK_ROWS do
+        local currentX = startX
+        local brickColor = BRICK_COLORS[((r - 1) % #BRICK_COLORS) + 1] -- Cycle through colors
+
+        for c = 1, BRICKS_PER_ROW do
+            table.insert(bricks, {
+                x = currentX,
+                y = currentY,
+                width = BRICK_WIDTH,
+                height = BRICK_HEIGHT,
+                color = brickColor,
+                active = true
+            })
+            bricksRemaining = bricksRemaining + 1
+            currentX = currentX + BRICK_WIDTH + BRICK_HPADDING
+        end
+        currentY = currentY + BRICK_HEIGHT + BRICK_VPADDING
+    end
+
+    -- Initial paddle position
+    paddle.x = math.floor((SCREEN_W - paddle.width) / 2)
+    paddle.y = SCREEN_H - PADDLE_HEIGHT - PADDLE_Y_OFFSET
+
+    resetBall()
+    gameState = "playing" -- Directly start playing after setup
+end
+
+-- Initialization Function (called once on script load)
+function onInit()
+    print("Retrogadget Breakout: Initializing...")
+
+    -- Get component references (ensure names match your editor setup)
+    _vc = gdt.VideoChip0
+    _cpu = gdt.CPU0
+    _slider = gdt.Slider0
+    _button = gdt.Button0
+    _lcd = gdt.Lcd0 -- Optional, will be nil if not present
+
+    if not _vc then error("VideoChip0 not found!") end
+    if not _cpu then error("CPU0 not found!") end
+    if not _slider then error("Slider0 not found!") end
+    if not _button then error("Button0 not found!") end
+
+    -- Get actual screen dimensions from VideoChip
+    SCREEN_W = _vc.Width
+    SCREEN_H = _vc.Height
+
+    -- Seed random number generator (using os.clock as os.time is unavailable)
+    math.randomseed(os.clock())
+
+    -- Set initial paddle position (redundant with setupLevel, but good practice)
+    paddle.x = math.floor((SCREEN_W - paddle.width) / 2)
+    paddle.y = SCREEN_H - PADDLE_HEIGHT - PADDLE_Y_OFFSET
+
+    print("Initialization Complete. Screen: " .. SCREEN_W .. "x" .. SCREEN_H)
+    gameState = "start" -- Start in the start screen state
+end
+
+-- Update Function (called every frame)
+function update(dt)
+    -- Safety check for components (might be detached during runtime editing)
+    if not _vc or not _cpu or not _slider or not _button then return end
+
+    -- Clamp delta time (as recommended in cheat sheet)
+    if dt <= 0 or dt > 0.1 then
+        dt = 1 / 60
+    end
+
+    -- Read Input
+    local sliderValue = _slider.Value -- 0-100
+    local buttonPressed = _button.ButtonDown
+
+    -- == Game State Logic ==
+
+    if gameState == "start" then
+        if buttonPressed then
+            setupLevel() -- This changes gameState to "playing"
+        end
+
+    elseif gameState == "playing" then
+        -- 1. Move Paddle
+        local targetPaddleX = (sliderValue / 100) * (SCREEN_W - paddle.width)
+        paddle.x = math.floor(targetPaddleX) -- Ensure integer coords for drawing
+
+        -- 2. Move Ball
+        ball.x = ball.x + ball.dx * dt
+        ball.y = ball.y + ball.dy * dt
+
+        -- 3. Ball Collision Detection
+        -- Walls
+        if ball.x - ball.radius < 0 then -- Left wall
+            ball.x = ball.radius
+            ball.dx = -ball.dx
+        elseif ball.x + ball.radius > SCREEN_W then -- Right wall
+            ball.x = SCREEN_W - ball.radius
+            ball.dx = -ball.dx
+        end
+        if ball.y - ball.radius < 0 then -- Top wall
+            ball.y = ball.radius
+            ball.dy = -ball.dy
+        end
+
+        -- Paddle Collision (Simple AABB check)
+        if ball.dy > 0 -- Only check if moving down
+           and ball.y + ball.radius >= paddle.y
+           and ball.y - ball.radius < paddle.y + paddle.height -- Avoid sticking inside
+           and ball.x + ball.radius >= paddle.x
+           and ball.x - ball.radius <= paddle.x + paddle.width then
+
+            ball.y = paddle.y - ball.radius -- Place ball just above paddle
+            ball.dy = -ball.dy -- Bounce vertically
+
+            -- Optional: Vary bounce angle based on where it hits the paddle
+            local hitPos = (ball.x - (paddle.x + paddle.width / 2)) / (paddle.width / 2) -- -1 to 1
+            ball.dx = hitPos * ballSpeed * 1.2 -- Adjust horizontal speed based on hit, make it slightly faster
+            -- Renormalize/clamp speed if needed here
+
+        end
+
+        -- Brick Collision
+        for i = #bricks, 1, -1 do -- Iterate backwards for safe removal
+            local brick = bricks[i]
+            if brick.active then
+                -- Simple AABB collision check
+                if ball.x + ball.radius > brick.x and
+                   ball.x - ball.radius < brick.x + brick.width and
+                   ball.y + ball.radius > brick.y and
+                   ball.y - ball.radius < brick.y + brick.height then
+
+                    brick.active = false
+                    bricksRemaining = bricksRemaining - 1
+                    score = score + 10
+
+                    -- Determine bounce direction (basic)
+                    -- Find overlap amounts
+                    local overlapX1 = (ball.x + ball.radius) - brick.x
+                    local overlapX2 = (brick.x + brick.width) - (ball.x - ball.radius)
+                    local overlapY1 = (ball.y + ball.radius) - brick.y
+                    local overlapY2 = (brick.y + brick.height) - (ball.y - ball.radius)
+
+                    -- Find minimum overlap
+                    local minOverlapX = math.min(overlapX1, overlapX2)
+                    local minOverlapY = math.min(overlapY1, overlapY2)
+
+                    -- Bounce on the axis with less overlap (heuristic)
+                    if minOverlapX < minOverlapY then
+                        ball.dx = -ball.dx
+                        -- Nudge ball out horizontally
+                        ball.x = ball.x + (ball.dx > 0 and minOverlapX or -minOverlapX) * dt * 2 -- Nudge factor
+                    else
+                        ball.dy = -ball.dy
+                         -- Nudge ball out vertically
+                        ball.y = ball.y + (ball.dy > 0 and minOverlapY or -minOverlapY) * dt * 2 -- Nudge factor
+                    end
+
+                    -- Check for win immediately after breaking a brick
+                    if bricksRemaining <= 0 then
+                        gameState = "win"
+                    end
+                    break -- Only break one brick per frame
+                end
+            end
+        end
+
+        -- Check Lose Condition (Ball below paddle bottom)
+        if ball.y - ball.radius > SCREEN_H then
+            lives = lives - 1
+            if lives <= 0 then
+                gameState = "gameOver"
+            else
+                resetBall() -- Reset ball position for next life
+            end
+        end
+
+    elseif gameState == "gameOver" or gameState == "win" then
+        if buttonPressed then
+             -- Reset for a new game - go back to start screen
+            gameState = "start"
+             -- Or uncomment below to immediately start a new game
+            -- setupLevel()
+        end
+    end
+
+    -- == Drawing ==
+    _vc:Clear(COLOR_BG) -- Clear screen with background color
+
+    if gameState == "start" then
+        drawCenteredText(math.floor(SCREEN_H / 2) - 10, "RETRO BREAKOUT", COLOR_TEXT)
+        drawCenteredText(math.floor(SCREEN_H / 2) + 10, "Press Button to Start", COLOR_TEXT)
+
+    elseif gameState == "playing" then
+        -- Draw Paddle
+        _vc:FillRect(vec2(math.floor(paddle.x), math.floor(paddle.y)), paddle.width, paddle.height, COLOR_PADDLE)
+
+        -- Draw Ball
+        _vc:FillCircle(vec2(math.floor(ball.x), math.floor(ball.y)), ball.radius, COLOR_BALL)
+
+        -- Draw Bricks
+        for i, brick in ipairs(bricks) do
+            if brick.active then
+                _vc:FillRect(vec2(math.floor(brick.x), math.floor(brick.y)), brick.width, brick.height, brick.color)
+            end
+        end
+
+        -- Draw Score and Lives (Top Left)
+        _vc:DrawText("Score: " .. score, vec2(5, 5), COLOR_TEXT, 1)
+        _vc:DrawText("Lives: " .. lives, vec2(5, 15), COLOR_TEXT, 1)
+
+        -- Optional: Update LCD Display
+        if _lcd then
+            _lcd.Text = string.format("Score:%d Lives:%d", score, lives)
+        end
+
+    elseif gameState == "gameOver" then
+        drawCenteredText(math.floor(SCREEN_H / 2) - 10, "GAME OVER", COLOR_GAMEOVER)
+        drawCenteredText(math.floor(SCREEN_H / 2) + 10, "Score: " .. score, COLOR_TEXT)
+        drawCenteredText(math.floor(SCREEN_H / 2) + 30, "Press Button", COLOR_TEXT)
+
+         if _lcd then _lcd.Text = "GAME OVER Sc:"..score end
+
+    elseif gameState == "win" then
+        drawCenteredText(math.floor(SCREEN_H / 2) - 10, "YOU WIN!", COLOR_WIN)
+        drawCenteredText(math.floor(SCREEN_H / 2) + 10, "Score: " .. score, COLOR_TEXT)
+        drawCenteredText(math.floor(SCREEN_H / 2) + 30, "Press Button", COLOR_TEXT)
+
+        if _lcd then _lcd.Text = "YOU WIN! Sc:"..score end
+    end
+end
+
+-- No eventChannel functions needed for this example as we poll inputs directly

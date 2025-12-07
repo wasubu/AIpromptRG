@@ -1,0 +1,255 @@
+Retrogadget Lua Scripting Cheat Sheet (v12 - Final Confirmed)
+
+**Goal:** To provide reliable guidelines for generating Lua code compatible with the Retrogadget environment, based on observed patterns, documentation snippets, and confirmed working examples (Snake, Wordle).
+
+**Environment:**
+
+*   **Engine:** Retrogadget Game
+*   **Language:** Luau (based on Lua 5.1 syntax, with specific extensions detailed below).
+*   **Execution Context:** Scripts run attached to a Lua Controller component.
+
+**Core Script Structure & Execution:**
+
+1.  **Main Script File:** Code resides in a Lua script file.
+2.  **Execution Flow:**
+    *   Code at the **top level** runs **once** on script load/simulation start (used for `require` if needed, definitions, constants, one-off setup).
+    *   `onInit()`: Optional callback function. Called **once** after initial script load, before first `update()`.
+    *   `update()`: Optional callback function. Called **repeatedly** every frame for main loop logic (input, physics, state, drawing).
+
+**Accessing Gadget Components (`gdt`):**
+
+*   Components accessed via global `gdt` table.
+*   Reference by **editor name** (case-sensitive, e.g., `gdt.VideoChip0`, `gdt.Slider0`, `gdt.LedButton0`, `gdt.CPU0`, `gdt.AudioChip0`, `gdt.DPad0`).
+*   **Direct Property Access:** Use dot notation (e.g., `.Value`, `.X`, `.ButtonDown`, `.ButtonState`, `.LedState`, `.DeltaTime`, `.Time`, `.Width`, `.Height`, `.Text`). Properties can be read-only or writable.
+*   **Methods:** Use colon notation (e.g., `_vc:Clear()`, `audio:Play()`).
+*   **Multiple Components:** Can use multiples (e.g., `VideoChip0`, `VideoChip1`).
+*   **Observed Component Properties/Methods:**
+    *   `VideoChipN`: `.Width`, `.Height` (read - **TOTAL render buffer size**); Methods like `:Clear`, `:DrawLine`, `:DrawCircle`, `:FillRect`, `:DrawSprite`, `:DrawText` (see Drawing section).
+    *   `SliderN`: `.Value` (read, 0-100 range).
+    *   `ButtonN`/`LedButtonN`:
+        *   `.ButtonState`: (Read-only) Boolean state, true if *currently pressed*.
+        *   `.ButtonDown`: (Read-only) Boolean flag, true *only* on the frame the button *becomes* pressed (edge trigger).
+        *   `.LedState`: (Read/write boolean) Controls the button's LED.
+    *   `DPadN`: `.X`, `.Y` (read, -100, 0, or 100).
+    *   `CPUN`: `.DeltaTime`, `.Time` (read).
+    *   `AudioChipN`: `:SetChannelVolume(vol_0_100, channel_idx)`, `:Play(sample, channel_idx)`, `:IsPlaying(channel_idx)`.
+    *   `LcdN`: `.Text` (write).
+    *   `ScreenN`: `.Width`, `.Height`, `.Offset` (read - individual screen dimensions/position within VideoChip buffer). *Usually interact via VideoChip.*
+
+**Time & Frame Rate:**
+
+*   Use `gdt.CPU0`.
+*   `.DeltaTime`: Time since last frame (use in `update`). **Clamp invalid values:** `if dt <= 0 or dt > 0.1 then dt = 1/60 end`.
+*   `.Time`: Total simulation time elapsed.
+*   `os.clock()`: High-precision timer for measuring durations (from standard Luau library).
+*   **Manual Timer Pattern:** Use delta time accumulation for timed events.
+
+**Input Handling:**
+
+*   Use `gdt`.
+*   **Stick (`gdt.StickN`):** `.X`, `.Y` properties (range likely -100 to +100). Normalize: `_stick.X / 100`.
+*   **DPad (`gdt.DPadN`):** `.X`, `.Y` properties (-100, 0, 100). Use edge detection (comparing current state `_dpad.X` vs previous state `dpadPrevX`) for single navigation steps. Remember to store previous state each frame (`dpadPrevX = _dpad.X`). Invert Y for screen coordinates: `dy = -currentY / 100`.
+*   **Button (`gdt.ButtonN`, `gdt.LedButtonN`):** Use `.ButtonDown` for single press actions (like fire, select, backspace), `.ButtonState` for hold actions (if needed, less common for simple games).
+
+**Drawing (VideoChip API - `gdt.VideoChipN`):**
+
+*   Get reference: `local _vc = gdt.VideoChip0`.
+*   Get dimensions: `local totalWidth = _vc.Width`, `local totalHeight = _vc.Height`.
+*   **Layout:** Calculate positions based on dynamic `_vc.Width` and `_vc.Height` using math (`centeredX = (totalWidth - itemWidth) / 2`). Use `math.floor` for pixel-perfect integer coordinates if needed.
+*   **Multi-Screen:** Drawing commands are applied to the single VideoChip buffer. If multiple Screens are connected, they display different parts of this buffer based on their `Offset`.
+*   **Key Functions:** `:Clear`, `:DrawLine`, `:DrawCircle`, `:FillRect` (can set pixels), `:DrawSprite`, `:DrawText`.
+*   **Other Potential Functions:** Check official API docs for `FillCircle`, `DrawRect`, `DrawTriangle`, `FillTriangle`, `RasterSprite`, `DrawRenderBuffer`, etc.
+
+**Data Types:**
+
+*   **`vec2` / `vec3`:** Built-in types. `vec2(x, y)`, `vec3(x, y, z)`. Access `.X`, `.Y`, `.Z`. Built-in arithmetic (+,-,*,/). **Confirmed NO built-in methods** like `:length()`, `:normalize()`. Manual implementation required (see Vector Math section).
+*   **`color` Objects:**
+    *   **Built-in Constants:** (`color.black`, `color.white`, etc.) ARE documented but **proved unreliable** in practice. **STRONGLY RECOMMEND NOT USING THEM.**
+    *   **Constructors:** **Use these EXPLICITLY.** Confirmed:
+        *   `Color(r, g, b)` (RGB 0-255)
+        *   `ColorRGBA(r, g, b, a)` (RGBA 0-255, **Alpha `a` is required**, 255=opaque, 0=clear)
+        *   `ColorHSV(h, s, v)` (Hue 0-360, Sat/Val 0-100)
+    *   **Define Colors:** `local MY_RED = ColorRGBA(255, 0, 0, 255)`
+*   **`buffer`:** Fixed-size mutable memory block (see Standard Libraries).
+*   **`SpriteSheet` / `AudioSample`:** Represents assets. Accessed via `gdt.ROM`.
+*   **Lua Types:** `string`, `number` (64-bit double), `boolean`, `table`, `function`, `nil`, `thread`, `userdata`.
+
+**Vector Math (Manual Implementation REQUIRED for `vec2`/`vec3`):**
+
+*   Implement helper functions for common operations:
+    ```lua
+    -- Vec2 Helpers
+    local function vec2LengthSq(v) if not v then return 0 end; return (v.X or 0)^2 + (v.Y or 0)^2 end
+    local function vec2Length(v) return math.sqrt(vec2LengthSq(v)) end
+    local function vec2Normalize(v)
+        if not v then return vec2(0,0) end; local len = vec2Length(v)
+        if len > 0.0001 then return vec2(v.X / len, v.Y / len) else return vec2(0, 0) end
+    end
+    local function vec2Equals(v1, v2) if not v1 or not v2 then return false end; return v1.X == v2.X and v1.Y == v2.Y end
+
+    -- Vec3 Helpers (Add as needed - dot, cross, etc.)
+
+    -- General Distance Helper
+    local function distance2D(x1, y1, x2, y2) return math.sqrt( (x2 - x1)^2 + (y2 - y1)^2 ) end
+    ```
+
+**Luau Syntax Extensions (Beyond Lua 5.1):**
+
+*   **String Literals:** `\xAB`, `\u{ABC}`, `\z` (trim whitespace), `` `Interpolated {expr}` ``.
+*   **Number Literals:** `0xABC`, `0b0101`, digit separators `1_000`.
+*   **`continue` Statement:** Skips to next loop iteration. Seems available.
+*   **Compound Assignments:** `+=`, `-=`, `*=`, `/=`, `%=`, `^=`, `..=`, `//=`.
+*   **If-Then-Else Expressions:** `local v = if c then e1 else e2 end`. Mandatory `else`.
+*   **Generalized Iteration:** `for k, v in table do ... end`. Implement `__iter` for custom types.
+*   **Floor Division:** `//` operator and `//=`.
+
+**Type Annotations (Luau Gradual Typing):**
+
+*   Optional syntax (`local x: number = 5`) for static analysis. **Does NOT affect runtime.**
+*   Supports basic types, functions, tables (`{key:type}`, `{ [num]:type }`, `{type}`), unions (`|`, `?`), intersections (`&`), aliases (`type X = ...`, `export type X = ...`), `typeof`.
+
+**Standard Libraries (Available Globally without `require`):**
+
+*   **Global Functions:** `assert`, `error`, `gcinfo`, `getfenv`/`setfenv`, `getmetatable`/`setmetatable`, `next`, `newproxy`, `print`, `rawequal`/`rawget`/`rawset`, `select`, `tonumber`/`tostring`, `type`/`typeof`, `ipairs`/`pairs`, `pcall`/`xpcall`, `unpack`.
+*   **`math`:** Standard functions (`abs`, `acos`, etc.) plus `noise`, `clamp`, `sign`, `round`, `lerp`. Constants `pi`, `huge`.
+*   **`table`:** `concat`, `insert`, `remove`, `sort`, `pack`, `unpack`, `move`, `create`, `find`, `clear`, `freeze`, `isfrozen`, `clone`.
+*   **`string`:** `byte`, `char`, `find`, `format`, `gmatch`, `gsub`, `len` (#), `lower`, `match`, `rep`, `reverse`, `sub`, `upper`, `split`, `pack`, `packsize`, `unpack`.
+*   **`coroutine`:** `create`, `running`, `status`, `wrap`, `yield`, `isyieldable`, `resume`, `close`.
+*   **`bit32`:** Bitwise operations (`arshift`, `band`, etc.).
+*   **`utf8`:** `offset`, `codepoint`, `char`, `len`, `codes`.
+*   **`os`:** `clock` (high-precision timer), `date`, `difftime`, `time` (Unix timestamp).
+*   **`debug`:** `info`, `traceback`.
+*   **`buffer`:** `create`, `fromstring`, `tostring`, `len`, `read<type>`, `write<type>`, etc.
+
+**External Libraries (`require`):**
+
+*   **Project-Specific.** Examples: `require("lualib_bundle")` (TS features), `require("Retro3D")`. *Do not assume availability unless explicitly included.*
+
+**Object-Oriented Programming:**
+
+*   Possible via: `lualib_bundle` (`__TS__Class`) *if available*, or manual Lua metatables.
+
+**Accessing Assets (`gdt.ROM`):**
+
+*   System Assets: `gdt.ROM.System.SpriteSheets["AssetName"]`
+*   User Assets: `gdt.ROM.User.SpriteSheets["AssetName.png"]`, `gdt.ROM.User.AudioSamples["SampleName.wav"]` (Include extension).
+
+**Common Game/Application Patterns:**
+
+*   **State Machine:** `gameState` variable.
+*   **Object Management:** Array of Structures (AoS) vs Structure of Arrays (SoA).
+*   **Looping for Removal:** Use backwards loops (`for i = #list, 1, -1 do`).
+*   **Edge Detection (Input):** Store previous state (`prevX=currentX`) and compare (`if currentX ~= 0 and prevX == 0 then ... end`).
+*   **Safety Checks:** Check for `nil` before use (`if obj and obj.position then ... end`).
+
+**Debugging:**
+
+*   Use `print(...)` liberally to output values to the Retrogadget console.
+*   Use temporary on-screen drawing (`_vc:DrawText`, `_vc:DrawCircle`) to visualize state.
+*   Use `debug.traceback()` for call stacks.
+
+**Known Limitations/Restrictions:**
+
+*   **No `goto`:** Use structured loops and conditionals.
+*   **Restricted Libraries:** `os` (except time/date), `io`, likely other parts of `debug` are unavailable/sandboxed.
+*   **Vector Methods:** Built-in `vec2`/`vec3` only have `.X`, `.Y`, `.Z` properties. Implement math helpers manually.
+*   **Color Constants:** Do NOT rely on built-in `color.X`; define explicitly with `Color`/`ColorRGBA`/`ColorHSV` constructors. `ColorRGBA` requires 4 arguments.
+
+---
+**Complete Example: Wordle Game (DPad Edition - Concise)**
+---
+```lua
+-- Retro Wordle - DPad Edition (v4 - Final Fix)
+
+-- Component Refs
+local _vc = gdt.VideoChip0; local _cpu = gdt.CPU0; local _dpad = gdt.DPad0
+local _enterButton = gdt.ButtonEnter; local _backButton = gdt.ButtonBackspace
+local _font = gdt.ROM.System.SpriteSheets["StandardFont"]
+
+-- Colors (Explicit)
+local COLOR_BLACK=ColorRGBA(0,0,0,255); local COLOR_WHITE=ColorRGBA(255,255,255,255); local COLOR_GRAY=ColorRGBA(128,128,128,255)
+local COLOR_GREEN=ColorRGBA(83,141,78,255); local COLOR_YELLOW=ColorRGBA(181,159,59,255); local COLOR_RED=ColorRGBA(255,0,0,255)
+local COLOR_CYAN=ColorRGBA(0,255,255,255); local COLOR_CLEAR=ColorRGBA(0,0,0,0)
+local COLOR_BACKGROUND=COLOR_BLACK; local COLOR_DEFAULT_BOX=COLOR_GRAY; local COLOR_TYPING_BOX=COLOR_WHITE
+local COLOR_CORRECT=COLOR_GREEN; local COLOR_PRESENT=COLOR_YELLOW; local COLOR_ABSENT=ColorRGBA(50,50,55,255)
+local COLOR_TEXT_LIGHT=COLOR_WHITE; local COLOR_TEXT_DARK=COLOR_BLACK; local COLOR_MESSAGE=COLOR_WHITE
+local COLOR_WIN=COLOR_GREEN; local COLOR_LOSE=COLOR_RED; local COLOR_KEY_DEFAULT=COLOR_GRAY
+local COLOR_KEY_SELECTED=COLOR_CYAN; local COLOR_KEY_USED_ABSENT=COLOR_ABSENT
+local COLOR_KEY_USED_PRESENT=COLOR_PRESENT; local COLOR_KEY_USED_CORRECT=COLOR_CORRECT
+local COLOR_UI_BG=ColorRGBA(0,0,0,150); local COLOR_START=COLOR_YELLOW
+
+-- Config
+local WORD_LENGTH=5; local MAX_GUESSES=6; local GRID_ROWS=MAX_GUESSES; local GRID_COLS=WORD_LENGTH
+local CELL_SIZE=math.max(10, math.floor(math.min(_vc.Width/(GRID_COLS+2), _vc.Height/(GRID_ROWS+4)))); local PADDING=math.floor(CELL_SIZE*0.15)
+local GRID_TOTAL_WIDTH=GRID_COLS*CELL_SIZE+(GRID_COLS-1)*PADDING; local START_X=math.floor((_vc.Width-GRID_TOTAL_WIDTH)/2)
+local START_Y=5; local keyboardLayout={"QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"}; local KEY_ROWS=#keyboardLayout
+local KEY_COLS_MAX=#keyboardLayout[1]; local KEY_WIDTH=math.floor(_vc.Width/(KEY_COLS_MAX+1)); local KEY_HEIGHT=math.floor(KEY_WIDTH*0.8)
+local KEY_PADDING_X=math.floor(KEY_WIDTH*0.1); local KEY_PADDING_Y=KEY_PADDING_X
+local KEYBOARD_START_Y=START_Y+GRID_ROWS*(CELL_SIZE+PADDING)+math.floor(CELL_SIZE*0.5)
+if KEYBOARD_START_Y+(KEY_ROWS+1)*(KEY_HEIGHT+KEY_PADDING_Y)>_vc.Height then KEYBOARD_START_Y=_vc.Height-(KEY_ROWS+1.5)*(KEY_HEIGHT+KEY_PADDING_Y) end
+local FONT_SIZE=8; local FB_ABSENT=0; local FB_PRESENT=1; local FB_CORRECT=2
+
+-- Word Lists (Shortened for brevity - use full lists from previous example)
+local possibleAnswers={"APPLE","TABLE","PROXY","REACT"}
+local allowedGuesses={"APPLE","TABLE","PROXY","REACT","ABOUT","ALERT","FRAME","LEARN"}
+
+-- Game State
+local gameState="START"; local targetWord=""; local guesses={}; local feedback={}; local keyStatus={}
+local currentGuess=""; local currentRow=0; local message=""; local messageTimer=0
+local keyboardRow=0; local keyboardCol=0; local dpadPrevX=0; local dpadPrevY=0
+
+-- Helpers
+local function selectTargetWord() return possibleAnswers[math.random(1,#possibleAnswers)] end
+local function isValidGuess(word) for _,v in ipairs(allowedGuesses) do if word==v then return true end end; return false end
+local function showMessage(text, duration) message=text; messageTimer=duration or 1.5 end
+local function processGuess(guess) local fb={}; local tL={}; local tWL=#targetWord; for i=1,tWL do fb[i]=FB_ABSENT;local c=string.sub(targetWord,i,i); tL[c]=(tL[c] or 0)+1 end; for i=1,tWL do local gC=string.sub(guess,i,i); if gC==string.sub(targetWord,i,i) then fb[i]=FB_CORRECT; tL[gC]-=1; keyStatus[gC]=FB_CORRECT end end; for i=1,tWL do if fb[i]==FB_ABSENT then local gC=string.sub(guess,i,i); if (tL[gC] or 0)>0 then fb[i]=FB_PRESENT; tL[gC]-=1; if keyStatus[gC]~=FB_CORRECT then keyStatus[gC]=FB_PRESENT end else if not keyStatus[gC] then keyStatus[gC]=FB_ABSENT end end end end; return fb end
+local function resetGame() targetWord=selectTargetWord(); print("Target:",targetWord); guesses={}; feedback={}; keyStatus={}; currentGuess=""; currentRow=0; message=""; messageTimer=0; keyboardRow=0; keyboardCol=0; dpadPrevX=0; dpadPrevY=0; gameState="PLAYING"; _enterButton.LedState=true; print("Game state PLAYING") end
+local function getFeedbackColor(fb) if fb==FB_CORRECT then return COLOR_CORRECT elseif fb==FB_PRESENT then return COLOR_PRESENT else return COLOR_ABSENT end end
+local function getTextColor(bg) if bg==COLOR_CORRECT or bg==COLOR_PRESENT then return COLOR_TEXT_DARK else return COLOR_TEXT_LIGHT end end
+local function drawLetterBox(r,c,char,boxC,txtC) local x=START_X+c*(CELL_SIZE+PADDING); local y=START_Y+r*(CELL_SIZE+PADDING); _vc:FillRect(vec2(x,y), vec2(x+CELL_SIZE-1,y+CELL_SIZE-1), boxC); if _font and char and char~="" then local cW=5; local fH=FONT_SIZE; local tX=x+(CELL_SIZE-cW)/2; local tY=y+(CELL_SIZE-fH)/2; _vc:DrawText(vec2(math.floor(tX),math.floor(tY)), _font, char, txtC, COLOR_CLEAR) end; _vc:DrawRect(vec2(x,y), vec2(x+CELL_SIZE-1,y+CELL_SIZE-1), COLOR_DEFAULT_BOX) end
+local function drawKeyboard() if not _font then return end; local totW=KEY_COLS_MAX*KEY_WIDTH+(KEY_COLS_MAX-1)*KEY_PADDING_X; local kSX=math.floor((_vc.Width-totW)/2); for r=0,KEY_ROWS-1 do local rowL=keyboardLayout[r+1]; local rowLen=#rowL; local rSX=kSX+math.floor((KEY_COLS_MAX-rowLen)*(KEY_WIDTH+KEY_PADDING_X)/2); for c=0,rowLen-1 do local keyC=string.sub(rowL,c+1,c+1); local kx=rSX+c*(KEY_WIDTH+KEY_PADDING_X); local ky=KEYBOARD_START_Y+r*(KEY_HEIGHT+KEY_PADDING_Y); local isSel=(r==keyboardRow and c==keyboardCol); local kCol=COLOR_KEY_DEFAULT; local kTxtCol=COLOR_TEXT_LIGHT; local stat=keyStatus[keyC]; if stat==FB_CORRECT then kCol=COLOR_KEY_USED_CORRECT;kTxtCol=getTextColor(kCol) elseif stat==FB_PRESENT then kCol=COLOR_KEY_USED_PRESENT;kTxtCol=getTextColor(kCol) elseif stat==FB_ABSENT then kCol=COLOR_KEY_USED_ABSENT end; _vc:FillRect(vec2(kx,ky),vec2(kx+KEY_WIDTH-1,ky+KEY_HEIGHT-1),kCol); local cW=5; local fH=FONT_SIZE; local tX=kx+(KEY_WIDTH-cW)/2; local tY=ky+(KEY_HEIGHT-fH)/2; _vc:DrawText(vec2(math.floor(tX),math.floor(tY)),_font,keyC,kTxtCol,COLOR_CLEAR); local outCol=isSel and COLOR_KEY_SELECTED or COLOR_DEFAULT_BOX; _vc:DrawRect(vec2(kx,ky),vec2(kx+KEY_WIDTH-1,ky+KEY_HEIGHT-1),outCol); if isSel then _vc:DrawRect(vec2(kx-1,ky-1),vec2(kx+KEY_WIDTH,ky+KEY_HEIGHT),outCol) end end end; local spY=KEYBOARD_START_Y+KEY_ROWS*(KEY_HEIGHT+KEY_PADDING_Y); local spW=math.floor(KEY_WIDTH*1.8); local bkX=kSX; local entX=kSX+totW-spW; local bkSel=(keyboardRow==KEY_ROWS and keyboardCol==0); local bkCol=COLOR_KEY_DEFAULT; local bkTxtCol=COLOR_TEXT_LIGHT; _vc:FillRect(vec2(bkX,spY),vec2(bkX+spW-1,spY+KEY_HEIGHT-1),bkCol); local bkT=bkX+(spW-(2*5))/2; _vc:DrawText(vec2(math.floor(bkT),spY+(KEY_HEIGHT-FONT_SIZE)/2),_font,"BK",bkTxtCol,COLOR_CLEAR); local bkO=bkSel and COLOR_KEY_SELECTED or COLOR_DEFAULT_BOX; _vc:DrawRect(vec2(bkX,spY),vec2(bkX+spW-1,spY+KEY_HEIGHT-1),bkO); if bkSel then _vc:DrawRect(vec2(bkX-1,spY-1),vec2(bkX+spW,spY+KEY_HEIGHT),bkO) end; local entSel=(keyboardRow==KEY_ROWS and keyboardCol==1); local entCol=COLOR_KEY_DEFAULT; local entTxtCol=COLOR_TEXT_LIGHT; _vc:FillRect(vec2(entX,spY),vec2(entX+spW-1,spY+KEY_HEIGHT-1),entCol); local entT=entX+(spW-(3*5))/2; _vc:DrawText(vec2(math.floor(entT),spY+(KEY_HEIGHT-FONT_SIZE)/2),_font,"ENT",entTxtCol,COLOR_CLEAR); local entO=entSel and COLOR_KEY_SELECTED or COLOR_DEFAULT_BOX; _vc:DrawRect(vec2(entX,spY),vec2(entX+spW-1,spY+KEY_HEIGHT-1),entO); if entSel then _vc:DrawRect(vec2(entX-1,spY-1),vec2(entX+spW,spY+KEY_HEIGHT),entO) end end
+local function getSelectedKey() if keyboardRow<KEY_ROWS then local rL=keyboardLayout[keyboardRow+1]; if keyboardCol>=0 and keyboardCol<#rL then return string.sub(rL,keyboardCol+1,keyboardCol+1) end elseif keyboardRow==KEY_ROWS then if keyboardCol==0 then return"BACK" end; if keyboardCol==1 then return"ENTER" end end; return nil end
+
+-- Update Loop
+function update()
+    local dt = _cpu.DeltaTime; if dt <= 0 or dt > 0.1 then dt = 1/60 end
+    if messageTimer > 0 then messageTimer -= dt; if messageTimer <= 0 then message = "" end end
+
+    -- Input
+    local cX = _dpad.X; local cY = _dpad.Y; local dx = 0; local dy = 0
+    if cX ~= 0 and dpadPrevX == 0 then dx = cX / 100 end
+    if cY ~= 0 and dpadPrevY == 0 then dy = -cY / 100 end
+    dpadPrevX = cX; dpadPrevY = cY
+    if dx ~= 0 or dy ~= 0 then
+        if math.abs(dx) > math.abs(dy) then keyboardCol += dx else keyboardRow += dy end
+        keyboardRow = math.max(0, math.min(KEY_ROWS, keyboardRow))
+        if keyboardRow < KEY_ROWS then local rL=#keyboardLayout[keyboardRow+1]; keyboardCol=math.max(0,math.min(rL-1,keyboardCol)) else keyboardCol=math.max(0,math.min(1,keyboardCol)) end
+    end
+    local selKey = getSelectedKey()
+
+    if _enterButton.ButtonDown then
+        if gameState == "PLAYING" then
+            if selKey == "ENTER" then
+                if #currentGuess == WORD_LENGTH then
+                    if isValidGuess(currentGuess) then local fb=processGuess(currentGuess); table.insert(guesses,currentGuess); table.insert(feedback,fb); local win=true; for i=1,WORD_LENGTH do if fb[i]~=FB_CORRECT then win=false; break end end; if win then gameState="WON"; _enterButton.LedState=false; showMessage("You Win!",5) elseif currentRow>=MAX_GUESSES-1 then gameState="LOST"; _enterButton.LedState=false; showMessage("Word: "..targetWord,10) else currentRow+=1; currentGuess="" end
+                    else showMessage("Not a valid word", 1.5) end
+                else showMessage("Not enough letters", 1.0) end
+            elseif selKey == "BACK" then if #currentGuess > 0 then currentGuess=string.sub(currentGuess,1,#currentGuess-1) end
+            elseif selKey then if #currentGuess < WORD_LENGTH then currentGuess..=selKey end end
+        elseif gameState=="START" or gameState=="WON" or gameState=="LOST" then if selKey=="ENTER" then resetGame() end end
+    end
+    if _backButton.ButtonDown then if gameState=="PLAYING" and #currentGuess>0 then currentGuess=string.sub(currentGuess,1,#currentGuess-1) end end
+
+    -- Drawing
+    _vc:Clear(COLOR_BACKGROUND)
+    for r=0,GRID_ROWS-1 do for c=0,GRID_COLS-1 do local ch=""; local bC=COLOR_DEFAULT_BOX; local tC=COLOR_TEXT_LIGHT; if r<currentRow then ch=string.sub(guesses[r+1],c+1,c+1); local fb=feedback[r+1][c+1]; bC=getFeedbackColor(fb); tC=getTextColor(bC) elseif r==currentRow and gameState=="PLAYING" then bC=COLOR_TYPING_BOX; tC=COLOR_TEXT_DARK; if c<#currentGuess then ch=string.sub(currentGuess,c+1,c+1) end end; drawLetterBox(r,c,ch,bC,tC) end end
+    drawKeyboard()
+    if message and message~="" and _font then local mW=#message*6; local mX=(_vc.Width-mW)/2; local mY=KEYBOARD_START_Y+(KEY_ROWS+1)*(KEY_HEIGHT+KEY_PADDING_Y)+5; if mY+FONT_SIZE>_vc.Height then mY=_vc.Height-FONT_SIZE-1 end; _vc:DrawText(vec2(math.floor(mX),math.floor(mY)),_font,message,COLOR_MESSAGE,COLOR_UI_BG) end
+    if (gameState=="START" or gameState=="WON" or gameState=="LOST") and _font then local t=""; local p=""; local tC=COLOR_WHITE; local fS=""; if gameState=="START" then t="Retro Wordle";tC=COLOR_START;p="Use DPad, Select 'ENT', Press Enter" elseif gameState=="WON" then t="You Win!";tC=COLOR_WIN;p="Select 'ENT', Press Enter to Retry";fS=string.format("Word: %s (%d/%d)",targetWord,currentRow+1,MAX_GUESSES) elseif gameState=="LOST" then t="Game Over";tC=COLOR_LOSE;p="Select 'ENT', Press Enter to Retry";fS=string.format("Word was: %s",targetWord) end; local tW=#t*6; local pW=#p*6; local fSW=#fS*6; local txtY=math.floor(_vc.Height/2-FONT_SIZE*2); if KEYBOARD_START_Y<txtY+3*(FONT_SIZE+2) then txtY=START_Y+GRID_ROWS*(CELL_SIZE+PADDING)+2 end; txtY=math.max(5,txtY); _vc:DrawText(vec2(math.floor((_vc.Width-tW)/2),txtY),_font,t,tC,COLOR_CLEAR); _vc:DrawText(vec2(math.floor((_vc.Width-pW)/2),txtY+FONT_SIZE+2),_font,p,COLOR_WHITE,COLOR_CLEAR); if fS~="" then _vc:DrawText(vec2(math.floor((_vc.Width-fSW)/2),txtY+(FONT_SIZE+2)*2),_font,fS,COLOR_WHITE,COLOR_CLEAR) end end
+end
+
+-- Initial Setup
+print("Retro Wordle (DPad Edition v4) Script Loaded.")
+gameState = "START"; _enterButton.LedState = true; dpadPrevX = 0; dpadPrevY = 0
+if not _font then print("Error: StandardFont not found!") end
+START_X = math.max(0, START_X); KEYBOARD_START_Y = math.max(START_Y + GRID_ROWS * (CELL_SIZE + PADDING), KEYBOARD_START_Y)

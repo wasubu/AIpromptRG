@@ -1,0 +1,230 @@
+--- START OF FILE retro_cheatsheet_v25.txt ---
+# Retrogadget Lua Scripting Cheat Sheet (v25 - Dev Practice Aligned: Top-Level Init Standard)
+
+**Goal:** Provide reliable guidelines for Lua scripting in Retrogadget, optimized for AI understanding and code generation. This version aligns with demonstrated developer practices, confirming **top-level initialization for components and assets is standard and reliable**.
+
+**Environment:**
+
+*   **Engine:** Retrogadget Game
+*   **Language:** Luau (based on `Lua 5.1` syntax, with specific extensions detailed below).
+*   **Execution Context:** Scripts run attached to a `Lua Controller` component.
+
+## Core Script Structure & Execution Flow
+
+1.  **Top Level:** Runs **once** immediately when the script loads or the simulation starts.
+    *   `[BEHAVIOR]` Executes top-to-bottom before any `update()` calls. Declaration must precede usage.
+    *   `[STANDARD_PRACTICE]` **This is the primary and reliable location for all initial setup:**
+        *   `require` external Lua files.
+        *   Define constants and helper functions.
+        *   Initialize state variables and tables.
+        *   **Get `gdt` component references** (e.g., `local _vc = gdt.VideoChip0`, `local _cpu = gdt.CPU0`, `local _stick = gdt.Stick0`).
+        *   **Load assets from `gdt.ROM`** (e.g., `local font = gdt.ROM.System.SpriteSheets["StandardFont"]`).
+        *   Read initial component properties (e.g., `local SCREEN_W = _vc.Width`).
+        *   Perform initial component interactions (e.g., `_audio:PlayLoop(...)`, `_audio.Volume = ...`).
+    *   `[ROBUSTNESS]` Use `pcall` when accessing `gdt` components or ROM assets if there's any chance they might be missing from the gadget configuration, to prevent script errors.
+    ```lua
+    -- [EXAMPLE] Standard Top-level Setup (incorporating dev practices)
+    local Lib = require("my_game_lib") -- Require libraries first
+
+    -- Get core component references (use pcall for safety if needed)
+    local _vc = gdt.VideoChip0
+    local _cpu = gdt.CPU0
+    local _audio = gdt.AudioChip0
+    local _stick = gdt.Stick0
+    local _button = gdt.LedButton0
+    local _rom = gdt.ROM -- Reference to ROM component itself
+
+    -- Check if critical components exist
+    if not _vc or not _cpu or not _rom then
+         print("[FATAL ERROR] Missing critical component(s)! Halting setup.")
+         -- Cannot proceed without these, maybe enter an error state if update runs
+         error("Missing critical component(s)!") -- Force halt
+    end
+
+    -- Get screen dimensions
+    local SCREEN_W = _vc.Width
+    local SCREEN_H = _vc.Height
+
+    -- Load assets (use pcall if asset might be missing)
+    local standardFont = _rom.System.SpriteSheets["StandardFont"]
+    local playerSpriteSheet = _rom.User.SpriteSheets["player.png"]
+    local musicTrack = _rom.User.AudioSamples["music.wav"]
+
+    if not standardFont then print("[WARN] StandardFont missing!") end -- Handle missing optional assets
+
+    -- Constants and Game State
+    local MAX_SPEED = 100
+    local INITIAL_LIVES = 3
+    local score = 0
+    local playerPos = vec2(SCREEN_W / 2, SCREEN_H - 20)
+    local gameState = "title" -- Initial game state
+
+    -- Initial Actions
+    if _audio and musicTrack then
+         _audio:PlayLoop(musicTrack, 0) -- Play music on channel 0
+         _audio.Volume = 80
+    end
+    if _cpu then
+        math.randomseed(_cpu.Time) -- Seed random using CPU time
+    else
+        math.randomseed(0) -- Fallback if no CPU
+        print("[WARN] No CPU found, random seeded with 0.")
+    end
+
+    print("Top-level setup complete. Screen: " .. SCREEN_W .. "x" .. SCREEN_H)
+    ```
+
+2.  **`update()` or `update(dt)`:** Required callback function for dynamic behavior.
+    *   `[BEHAVIOR]` Called **repeatedly** every frame *after* the top-level execution, while the gadget simulation is running and powered.
+    *   `[SIGNATURE_CHOICE]` You can define it either as `function update()` or `function update(dt)`.
+        *   **`function update()`:** Simpler definition. You **must** use `_cpu.DeltaTime` (where `_cpu = gdt.CPU0` obtained at top level) to get the frame delta time. This is common in dev examples.
+        *   **`function update(dt)`:** Receives delta time directly as the `dt` argument. Might be slightly clearer for passing `dt` around. **Always validate/clamp `dt` if you use this signature.**
+    *   `[USE_CASE]` Main game loop: Handle input, update game state, physics, timers, drawing. Check `gdt.PowerButtonN.PowerState` here for power-on specific logic.
+
+    ```lua
+    -- [EXAMPLE] update() using _cpu.DeltaTime (common practice)
+    function update()
+        -- Get delta time from CPU component reference
+        local dt = 0 -- Default if no CPU
+        if _cpu then dt = _cpu.DeltaTime end
+        -- Validate/Clamp dt (still good practice even with _cpu.DeltaTime)
+        if type(dt) ~= "number" or dt <= 0 or dt > 0.1 then dt = 1 / 60 end
+
+        -- Handle Input (using references obtained at top level)
+        local moveX = 0
+        if _stick then moveX = _stick.X end
+        local firePressed = false
+        if _button then firePressed = _button.ButtonDown end
+
+        -- Update game logic using dt
+        playerPos.X = playerPos.X + (moveX / 100) * MAX_SPEED * dt
+        -- ... other game logic ...
+
+        -- Drawing (using references obtained at top level)
+        if _vc then
+            _vc:Clear(color.black)
+            if playerSpriteSheet then
+                 _vc:DrawSprite(playerPos, playerSpriteSheet, 0, 0, color.white)
+            end
+            if standardFont then
+                 _vc:DrawText(vec2(5, 5), standardFont, "Score: " .. score, color.white, color.clear)
+            end
+            -- ... other drawing ...
+            _vc:RenderOnScreen()
+        end
+    end
+
+    -- -- [ALTERNATIVE EXAMPLE] update(dt)
+    -- function update(dt)
+    --     -- Validate/Clamp dt received as argument
+    --     if type(dt) ~= "number" or dt <= 0 or dt > 0.1 then dt = 1 / 60 end
+    --
+    --     -- Logic uses 'dt' directly...
+    --     -- ... same input/logic/drawing as above ...
+    -- end
+    ```
+
+3.  **`eventChannelN(sender, arg)`:** Optional callback functions.
+    *   `[BEHAVIOR]` Called automatically when data arrives on the corresponding input channel (from `WifiN`, `KeyboardChipN`, `GamepadChipN`).
+    *   `[ARGUMENTS]` `sender` (source component), `arg` (data table).
+
+## Accessing Gadget Components (`gdt`)
+
+*   `[ACCESS]` Via global `gdt` table.
+*   `[REFERENCE]` Use **editor name** (case-sensitive: `gdt.VideoChip0`, `gdt.Wifi0`, `gdt.LedButton0`).
+    *   `[EXCEPTION]` `LcdDisplay` is `gdt.LcdN` (e.g., `gdt.Lcd0`).
+*   `[STANDARD_PRACTICE]` Get and store component references in **local variables at the top level** of your script. Use `pcall` if a component might be missing in some configurations.
+*   **Accessing Members:**
+    *   `[PROPERTY_ACCESS]` Dot notation: `_vc.Width` (using the stored reference).
+    *   `[METHOD_ACCESS]` Colon notation: `_vc:Clear()` (using the stored reference).
+
+## Common Component APIs (Referenced via top-level variables)
+
+*   **`VideoChipN` (`_vc`)**: See [Drawing](#drawing-videochip-api---referenced-via-top-level-variable). `.Width`, `.Height`.
+*   **`SliderN` (`_slider`)**: `.Value` (number, 0-100).
+*   **`LedButtonN` (`_button`)**: `.ButtonState` (held), `.ButtonDown` (pressed), `.LedState` (r/w boolean).
+*   **`DPadN` (`_dpad`)**: `.X`, `.Y` (-100, 0, 100).
+*   **`StickN` / `AnalogStickN` (`_stick`)**: `.X`, `.Y` (-100 to 100).
+*   **`CPUN` (`_cpu`)**: `.DeltaTime` (use in `update` if no `dt` arg), `.Time` (total sim seconds, use for seeding random).
+*   **`AudioChipN` (`_audio`)**: `:SetChannelVolume()`, `:Play()`, `:IsPlaying()`, `:PlayLoop()`. `.Volume`.
+*   **`LcdN` (`_lcd`)** (`LcdDisplay`): `.Text` (write string).
+*   **`ScreenN` (`_screen`)**: `.Width`, `.Height`, `.Offset`.
+*   **`WifiN` (`_wifi`)**: See [Networking](#networking-wifi-api---referenced-via-top-level-variable). `.AccessDenied`.
+*   **`FlashMemoryN` (`_flash`)**: See [Persistence](#persistence-flashmemoryn-api---referenced-via-top-level-variable). `.Size`, `.Usage`.
+*   **`PowerButtonN` (`_powerBtn`)**: `.PowerState` (read-only boolean). Check changes in `update()`.
+
+## Time & Frame Rate
+
+*   `[SOURCE]` Get `_cpu = gdt.CPU0` reference at the top level.
+*   **Delta Time (`dt`)**:
+    *   Option 1: Define `function update()` and use `local dt = _cpu.DeltaTime`.
+    *   Option 2: Define `function update(dt)` and use the `dt` argument.
+    *   `[RULE]` Always validate/clamp `dt` regardless of source: `if type(dt) ~= "number" or dt <= 0 or dt > 0.1 then dt = 1 / 60 end`.
+*   **Total Time (`_cpu.Time`)**:
+    *   `[DEFINITION]` Total simulation time elapsed (seconds).
+    *   `[USE_CASE]` **Standard source for seeding `math.randomseed()`** at the top level.
+*   **`os.clock()` / `os.time()` / `os.date()` / `os.difftime()`**:
+    *   `[STATUS]` **Unavailable.** `[CONFIRMED]`
+*   **`math.randomseed()`**:
+    *   `[RECOMMENDATION]` Seed once at the top level using `_cpu.Time`. Fallback to `math.randomseed(0)` if `_cpu` is unavailable.
+*   **Manual Timers:**
+    *   `[TECHNIQUE]` Decrement by `dt` in `update()`: `timer = timer - dt`.
+
+## Input Handling
+
+*   Get component references (`_stick`, `_dpad`, `_button`) at the top level.
+*   Read properties (`_stick.X`, `_button.ButtonDown`) inside `update()`.
+*   Use edge detection for non-`.ButtonDown` events if needed (store previous state).
+*   **`KeyboardChipN` / `GamepadChipN`**: Events via `eventChannelN(sender, arg)`. Inspect `arg` table. `[CONFIRMED]`
+
+## Drawing (VideoChip API - Referenced via top-level variable)
+
+*   `[REFERENCE]` `local _vc = gdt.VideoChip0` (At top level).
+*   `[DIMENSIONS]` `local w = _vc.Width`, `local h = _vc.Height` (At top level).
+*   `[COORDINATES]` `vec2(x, y)`. Use `math.floor()`.
+*   `[PERFORMANCE]` Handles thousands of simple calls/frame.
+*   `[RENDER_TARGETS]` `:RenderOnScreen()`, `:RenderOnBuffer(index)`.
+
+### Functions (Signatures Critical)
+
+*   Use the `_vc` reference: `_vc:Clear(color.black)`
+*   `:Clear(color color)`
+*   `:SetPixel(position vec2, color color)`
+*   `:DrawLine(position1 vec2, position2 vec2, color color)`
+*   `:DrawCircle(center vec2, radius number, color color)` (Outline)
+*   `:FillCircle(center vec2, radius number, color color)` (Filled)
+*   `:DrawRect(position1 vec2, position2 vec2, color color)` (Outline, corner coords)
+*   `:FillRect(position1 vec2, position2 vec2, color color)` (Filled, corner coords) `[CONFIRMED]`
+*   `:DrawTriangle(position1 vec2, position2 vec2, position3 vec2, color color)`
+*   `:FillTriangle(position1 vec2, position2 vec2, position3 vec2, color color)`
+*   `:DrawSprite(position vec2, spriteSheet SpriteSheet, frameX number, frameY number, tintColor color, backgroundColor color)` `[NOTE]` Signature variation seen in dev code. Original cheatsheet had `spriteIndex`. Test arguments. Using `frameX, frameY` seems common. Use `color.clear` for transparent background. Requires `SpriteSheet` reference (e.g., `playerSpriteSheet` loaded at top level).
+*   `:DrawCustomSprite(...)`
+*   `:DrawText(position vec2, fontSprite SpriteSheet, text string, textColor color, backgroundColor color)` `[NOTE]` Requires font `SpriteSheet` reference (e.g., `standardFont` loaded at top level). Use `color.clear` for transparent background.
+
+## Networking (Wifi API - Referenced via top-level variable)
+
+*   Get `_wifi = gdt.Wifi0` at top level.
+*   `[PERMISSION]` Check `_wifi.AccessDenied`.
+*   `[ASYNCHRONOUS]` Responses via `eventChannelN`.
+*   `[SETUP]` Connect Wifi output to Lua input `N`. Implement `function eventChannelN(sender, response)`.
+*   **Request Methods:** `_wifi:WebGet`, etc. (return `handle`).
+*   **Response Event:** `response` table (`RequestHandle`, `ResponseCode`, `IsError`, etc.).
+
+## Data Types
+
+*   **`vec2` / `vec3`:** Built-in userdata. `.X`, `.Y`, `.Z`. Supports arithmetic. **No built-in methods** (`.normalize`, `.length`) `[CONFIRMED]`. Implement manually.
+*   **`color` Objects:** Built-in userdata.
+    *   **Built-in Constants:** `[CONFIRMED]` **Only 10 reliable:** `color.black`, `color.blue`, `color.clear`, `color.cyan`, `color.gray`, `color.green`, `color.magenta`, `color.red`, `color.white`, `color.yellow`.
+    *   **Other Colors:** `[RULE]` `[CONFIRMED]` **MUST** use constructors: `Color(r,g,b)`, `ColorRGBA(r,g,b,a)`, `ColorHSV(h,s,v)`. (E.g., no `color.darkgrey`).
+*   **Assets:** `SpriteSheet`, `AudioSample` (userdata from `gdt.ROM`). Load into variables at top level.
+*   **Lua Types:** Standard (`string`, `number`, `boolean`, `table`, `function`, `nil`, `userdata`). `thread` exists but coroutines disabled.
+
+## Vector Math (Manual Implementation Required)
+
+```lua
+-- Place these helpers at the top level
+local function vec2LengthSq(v) return (v.X*v.X + v.Y*v.Y) end
+local function vec2Length(v) return math.sqrt(vec2LengthSq(v)) end
+local function vec2Normalize(v)
+    local len = vec2Length(v); if len > 1e-6 then return vec2(v.X / len, v.Y / len) else return vec2(0, 0) end
+end

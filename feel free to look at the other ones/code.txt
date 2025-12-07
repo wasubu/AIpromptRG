@@ -1,0 +1,158 @@
+Retrogadget Lua Scripting Cheat Sheet (v8 - Final Confirmed)
+
+**Goal:** To provide guidelines for generating Lua code compatible with the Retrogadget environment, based on observed patterns, documentation snippets, and confirmed working examples.
+
+**Environment:**
+
+*   **Engine:** Retrogadget Game
+*   **Language:** Luau (based on Lua 5.1 syntax, with specific extensions detailed below).
+*   **Execution Context:** Scripts run attached to a Lua Controller component.
+
+**Core Script Structure & Execution:**
+
+1.  **Main Script File:** Code resides in a Lua script file.
+2.  **Execution Flow:**
+    *   Code at the **top level** runs **once** on script load/simulation start (for `require`, definitions, constants, one-off setup).
+    *   `onInit()`: Optional callback function. Called **once** after initial script load, before first `update()`.
+    *   `update()`: Optional callback function. Called **repeatedly** every frame for main loop logic.
+
+**Accessing Gadget Components (`gdt`):**
+
+*   Components accessed via global `gdt` table.
+*   Reference by **editor name** (case-sensitive, e.g., `gdt.VideoChip0`, `gdt.Slider0`, `gdt.LedButton0`, `gdt.CPU0`, `gdt.AudioChip0`).
+*   **Direct Property Access:** Use dot notation (e.g., `.Value`, `.X`, `.ButtonDown`, `.ButtonState`, `.LedState`, `.DeltaTime`, `.Time`, `.Width`, `.Height`, `.Text`). Properties can be read-only or writable.
+*   **Methods:** Use colon notation (e.g., `_vc:Clear()`, `audio:Play()`).
+*   **Multiple Components:** Can use multiples (e.g., `VideoChip0`, `VideoChip1`).
+*   **Observed Component Properties/Methods:**
+    *   `VideoChipN`: `.Width`, `.Height` (read); Methods like `:Clear`, `:DrawLine`, `:DrawCircle`, `:FillRect`, `:DrawSprite`, `:DrawText` (see Drawing section).
+    *   `SliderN`: `.Value` (read, 0-100 range).
+    *   `ButtonN`/`LedButtonN`:
+        *   `.ButtonState`: (Read-only table?) Boolean state, true if *currently pressed*.
+        *   `.ButtonDown`: (Read-only table?) Boolean flag, true *only* on the frame the button *becomes* pressed (edge trigger).
+        *   `.LedState`: (Read/write boolean) Controls the button's LED.
+    *   `CPUN`: `.DeltaTime`, `.Time` (read).
+    *   `AudioChipN`: `:SetChannelVolume(vol_0_100, channel_idx)`, `:Play(sample, channel_idx)`, `:IsPlaying(channel_idx)`.
+    *   `LcdN`: `.Text` (write).
+
+**Time & Frame Rate:**
+
+*   Use `gdt.CPU0`.
+*   `.DeltaTime`: Time since last frame (use in `update`). **Clamp invalid values:** `if dt <= 0 or dt > 0.1 then dt = 1/60 end`.
+*   `.Time`: Total simulation time elapsed.
+*   `os.clock()`: High-precision timer for measuring durations (from standard Luau library).
+
+**Input Handling:**
+
+*   Use `gdt`.
+*   **Stick (`gdt.StickN`):** `.X`, `.Y` properties (range likely -100 to +100). Normalize: `_stick.X / 100`.
+*   **Button (`gdt.ButtonN`, `gdt.LedButtonN`):** Use `.ButtonDown` for single press actions, `.ButtonState` for hold actions.
+
+**Drawing (VideoChip API - `gdt.VideoChipN`):**
+
+*   Get reference: `local _vc = gdt.VideoChip0`.
+*   Get dimensions: `local w = _vc.Width`, `local h = _vc.Height`.
+*   **Multi-Screen:** Draw to each GPU, applying coordinate offsets. Helper functions recommended.
+*   **Key Functions:** `:Clear`, `:DrawLine`, `:DrawCircle`, `:FillRect` (can set pixels), `:DrawSprite`, `:DrawText`.
+*   **Other Potential Functions:** Check official API docs for `FillCircle`, `DrawRect`, `DrawTriangle`, `FillTriangle`, `RasterSprite`, `DrawRenderBuffer`, etc.
+
+**Data Types:**
+
+*   **`vec2` / `vec3`:** Built-in types. `vec2(x, y)`, `vec3(x, y, z)`. Access `.X`, `.Y`, `.Z`. Built-in arithmetic (+,-,*,/). **Confirmed NO built-in methods** like `:length()`, `:normalize()`. Manual implementation required (see Vector Math section).
+*   **`color` Objects:**
+    *   **Built-in Constants:** `color.black`, `color.blue`, `color.clear`, `color.cyan`, `color.gray`, `color.green`, `color.magenta`, `color.red`, `color.white`, `color.yellow` **ARE available**.
+    *   **Constructors:** `Color(r, g, b)`, `ColorRGBA(r, g, b, a)`, `ColorHSV(h, s, v)`. Use for custom colors.
+*   **`buffer`:** Fixed-size mutable memory block (see Standard Libraries).
+*   **`SpriteSheet` / `AudioSample`:** Represents assets. Accessed via `gdt.ROM`.
+*   **Lua Types:** `string`, `number` (64-bit double), `boolean`, `table`, `function`, `nil`, `thread`, `userdata`.
+
+**Vector Math (Manual Implementation REQUIRED for `vec2`/`vec3`):**
+
+*   Implement helper functions for common operations:
+    ```lua
+    -- Vec2 Helpers
+    local function vec2LengthSq(v) if not v then return 0 end; return (v.X or 0)^2 + (v.Y or 0)^2 end
+    local function vec2Length(v) return math.sqrt(vec2LengthSq(v)) end
+    local function vec2Normalize(v)
+        if not v then return vec2(0,0) end; local len = vec2Length(v)
+        if len > 0.0001 then return vec2(v.X / len, v.Y / len) else return vec2(0, 0) end
+    end
+    local function vec2Dot(v1, v2) if not v1 or not v2 then return 0 end; return (v1.X*v2.X) + (v1.Y*v2.Y) end
+
+    -- Vec3 Helpers
+    local function vec3LengthSq(v) if not v then return 0 end; return (v.X or 0)^2 + (v.Y or 0)^2 + (v.Z or 0)^2 end
+    local function vec3Length(v) return math.sqrt(vec3LengthSq(v)) end
+    local function vec3Normalize(v)
+        if not v then return vec3(0,0,0) end; local len = vec3Length(v)
+        if len > 0.0001 then return vec3(v.X / len, v.Y / len, v.Z / len) else return vec3(0,0,0) end
+    end
+    local function vec3Dot(v1, v2) if not v1 or not v2 then return 0 end; return (v1.X*v2.X) + (v1.Y*v2.Y) + (v1.Z*v2.Z) end
+    local function vec3Cross(v1, v2)
+        if not v1 or not v2 then return vec3(0,0,0) end
+        return vec3(v1.Y * v2.Z - v1.Z * v2.Y, v1.Z * v2.X - v1.X * v2.Z, v1.X * v2.Y - v1.Y * v2.X)
+    end
+
+    -- General Distance Helper
+    local function distance2D(x1, y1, x2, y2) return math.sqrt( (x2 - x1)^2 + (y2 - y1)^2 ) end
+    ```
+
+**Luau Syntax Extensions (Beyond Lua 5.1):**
+
+*   **String Literals:** `\xAB`, `\u{ABC}`, `\z` (trim whitespace), `` `Interpolated {expr}` ``.
+*   **Number Literals:** `0xABC`, `0b0101`, digit separators `1_000`.
+*   **`continue` Statement:** Skips to next loop iteration.
+*   **Compound Assignments:** `+=`, `-=`, `*=`, `/=`, `%=`, `^=`, `..=`, `//=`.
+*   **If-Then-Else Expressions:** `local v = if c then e1 else e2 end`. Mandatory `else`.
+*   **Generalized Iteration:** `for k, v in table do ... end`. Implement `__iter` for custom types.
+*   **Floor Division:** `//` operator and `//=`.
+
+**Type Annotations (Luau Gradual Typing):**
+
+*   Optional syntax (`local x: number = 5`) for static analysis. **Does NOT affect runtime.**
+*   Supports basic types, functions, tables (`{key:type}`, `{ [num]:type }`, `{type}`), unions (`|`, `?`), intersections (`&`), aliases (`type X = ...`, `export type X = ...`), `typeof`.
+
+**Standard Libraries (Available Globally without `require`):**
+
+*   **Global Functions:** `assert`, `error`, `gcinfo`, `getfenv`/`setfenv`, `getmetatable`/`setmetatable`, `next`, `newproxy`, `print`, `rawequal`/`rawget`/`rawset`, `select`, `tonumber`/`tostring`, `type`/`typeof`, `ipairs`/`pairs`, `pcall`/`xpcall`, `unpack`.
+*   **`math`:** Standard functions (`abs`, `acos`, etc.) plus `noise`, `clamp`, `sign`, `round`, `lerp`. Constants `pi`, `huge`.
+*   **`table`:** `concat`, `insert`, `remove`, `sort`, `pack`, `unpack`, `move`, `create`, `find`, `clear`, `freeze`, `isfrozen`, `clone`. (Deprecated: `foreach`, `foreachi`, `getn`, `maxn`).
+*   **`string`:** `byte`, `char`, `find`, `format`, `gmatch`, `gsub`, `len` (#), `lower`, `match`, `rep`, `reverse`, `sub`, `upper`, `split`, `pack`, `packsize`, `unpack`.
+*   **`coroutine`:** `create`, `running`, `status`, `wrap`, `yield`, `isyieldable`, `resume`, `close`.
+*   **`bit32`:** Bitwise operations (`arshift`, `band`, `bnot`, `bor`, `bxor`, `btest`, `extract`, `lrotate`, `lshift`, `replace`, `rrotate`, `rshift`, `countlz`, `countrz`, `byteswap`).
+*   **`utf8`:** `offset`, `codepoint`, `char`, `len`, `codes`.
+*   **`os`:** `clock` (high-precision timer), `date`, `difftime`, `time` (Unix timestamp).
+*   **`debug`:** `info`, `traceback`.
+*   **`buffer`:** `create`, `fromstring`, `tostring`, `len`, `read<type>`, `write<type>`, `readstring`, `writestring`, `copy`, `fill`.
+
+**External Libraries (`require`):**
+
+*   `require("lualib_bundle")`: **Project-Specific.** Provides TypeScriptToLua features/polyfills. *Do not assume availability.*
+*   `require("Retro3D")`, etc.: Domain-specific libraries for things like 3D. *Do not assume availability.*
+
+**Object-Oriented Programming:**
+
+*   Possible via: `lualib_bundle` (`__TS__Class`) *if available*, or manual Lua metatables.
+
+**Accessing Assets (`gdt.ROM`):**
+
+*   System Assets: `gdt.ROM.System.SpriteSheets["AssetName"]`
+*   User Assets: `gdt.ROM.User.SpriteSheets["AssetName.png"]`, `gdt.ROM.User.AudioSamples["SampleName.wav"]` (Include extension).
+
+**Common Game/Application Patterns:**
+
+*   **State Machine:** `gameState` variable.
+*   **Object Management:** Array of Structures (AoS) vs Structure of Arrays (SoA).
+*   **Looping for Removal:** Use backwards loops (`for i = #list, 1, -1 do`).
+*   **Custom Font Widths:** Use lookup table for precise spacing.
+*   **Multi-Value Return:** Use tables: `return {"type", index}`.
+*   **Safety Checks:** Check for `nil` before use (`if obj and obj.position then ... end`).
+
+**Debugging:**
+
+*   Use `print(...)` to output values to the Retrogadget console.
+*   Use temporary on-screen drawing (`_vc:DrawText`, `_vc:DrawCircle`) to visualize state.
+*   Use `debug.traceback()` for call stacks.
+
+**Remaining Uncertainties:**
+
+*   None based on current information. The Luau environment and core Retrogadget API access seem reasonably well-defined by the provided examples and documentation. Specific component details would require the official Retrogadget API docs.
+---

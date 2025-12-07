@@ -1,0 +1,244 @@
+--- START OF FILE retro_cheatsheet_v23.txt ---
+# Retrogadget Lua Scripting Cheat Sheet (v23 - Combined v19/v21, onInit Confirmed, Precise Colors, os.clock UNAVAILABLE)
+
+**Goal:** Provide reliable guidelines for Lua scripting in Retrogadget, optimized for AI understanding and code generation. This version merges details from v19 and v21, incorporating confirmed `onInit` behavior for load/start, precise color information, and reflecting that **`os.clock()` is UNAVAILABLE**. Retains the robust flag-based initialization pattern as an alternative or for power-on logic.
+
+**Environment:**
+
+*   **Engine:** Retrogadget Game
+*   **Language:** Luau (based on `Lua 5.1` syntax, with specific extensions detailed below).
+*   **Execution Context:** Scripts run attached to a `Lua Controller` component.
+
+## Core Script Structure & Execution Flow
+
+1.  **Top Level:** Runs **once** immediately when the script loads or the simulation starts.
+    *   `[BEHAVIOR]` Executes before any engine callbacks.
+    *   `[RECOMMENDATION]` Ideal for `require` statements, defining constants, helper functions, initializing state tables *not* dependent on `gdt`.
+    *   `[WARNING]` Accessing `gdt` components here *might* work but is less reliable than `onInit`. Use `pcall` if attempted.
+    ```lua
+    -- [EXAMPLE] Top-level setup (gdt-independent)
+    local MyLib = require("my_utility_lib.lua")
+    local MAX_SPEED = 100
+    local function calculate_score(hits) return hits * 10 end
+    local gameSettings = { difficulty = "normal" }
+    print("Top-level: Libs required, constants/helpers defined.")
+    ```
+
+2.  **`onInit()`:** Optional callback function. **(Confirmed Functional for Load/Start)**
+    *   `[BEHAVIOR]` Called **once** automatically *after* the top-level code runs, specifically when the script is initially loaded or the simulation begins. `gdt` components are expected to be accessible here.
+    *   `[RECOMMENDATION]` **Preferred location for one-time setup code that needs to access `gdt` components** (e.g., getting component references, reading dimensions, loading assets). Use `pcall` for robustness.
+    *   `[WARNING]` This function **does NOT run** when a gadget is powered on via a `PowerButton` component *after* the initial load/start. Logic needed specifically at power-on must be handled in `update()`.
+    ```lua
+    -- [EXAMPLE] Initialization using onInit (gdt-dependent)
+    local _vc = nil
+    local standardFont = nil
+    local SCREEN_W, SCREEN_H = 128, 128 -- Defaults
+
+    function onInit()
+        print("onInit: Starting initialization...")
+        local success = true
+        local errMsg = ""
+        local initSuccess, result
+
+        initSuccess, result = pcall(function() _vc = gdt.VideoChip0 end)
+        if not initSuccess or not result then success = false; errMsg = errMsg .. " VideoChip0 fail;" else _vc = result end
+
+        if _vc then
+             local widthSuccess, w = pcall(function() return _vc.Width end)
+             local heightSuccess, h = pcall(function() return _vc.Height end)
+             if widthSuccess and heightSuccess then SCREEN_W, SCREEN_H = w, h else success = false; errMsg = errMsg .. " Screen dims fail;" end
+        end
+
+        if gdt.ROM and gdt.ROM.System and gdt.ROM.System.SpriteSheets then
+            initSuccess, result = pcall(function() return gdt.ROM.System.SpriteSheets["StandardFont"] end)
+            if initSuccess and result then standardFont = result else success = false; errMsg = errMsg .. " Font load fail;" end
+        else
+             success = false; errMsg = errMsg .. " ROM fail;"
+        end
+
+        if success then
+            print("onInit: Initialization successful. Screen: " .. SCREEN_W .. "x" .. SCREEN_H)
+            -- Seed random: Only reliable source is CPU0.Time
+            if gdt.CPU0 then
+                math.randomseed(gdt.CPU0.Time)
+                print("onInit: Random seeded using CPU0.Time")
+            else
+                math.randomseed(0) -- Fallback to fixed seed if CPU0 unavailable
+                print("[WARN] onInit: CPU0 not found. Random seeded with 0 (predictable sequence).")
+            end
+        else
+            print("[ERROR] onInit: Initialization failed!" .. errMsg)
+            -- Handle failure gracefully
+        end
+    end
+    ```
+
+3.  **`update(dt)`:** Optional callback function.
+    *   `[BEHAVIOR]` Called **repeatedly** every frame while the gadget simulation is running and powered. Main game loop.
+    *   `[ARGUMENT]` Receives `dt` (delta time in seconds). Always validate and clamp `dt`.
+    *   `[USE_CASE]` Game logic, input polling, drawing, timers.
+    *   `[USE_CASE]` **Required** for logic specific to power-on via `PowerButtonN`.
+    *   `[USE_CASE]` Can be used for initialization with a flag pattern (see below) as an alternative/fallback.
+
+4.  **`eventChannelN(sender, arg)`:** Optional callback functions.
+    *   `[BEHAVIOR]` Called automatically when data arrives on the corresponding input channel (from `WifiN`, `KeyboardChipN`, `GamepadChipN`).
+    *   `[ARGUMENTS]` `sender` (source component), `arg` (data table).
+
+5.  **Initialization Strategy (Alternative using `update` Flag):**
+    *   `[REASON]` Use if `onInit` is unsuitable or as a robust fallback.
+    *   `[PATTERN]` Use a flag checked at the start of `update()`.
+
+    ```lua
+    -- [EXAMPLE] Robust Initialization Pattern in update()
+    local initialized = false
+    local _vc = nil
+
+    local function performInitialization()
+        if initialized then return true end
+        print("Performing one-time initialization via update()...")
+        local initSuccess = true
+        -- Use pcall for safety
+        local success_vc, vcRef = pcall(function() return gdt.VideoChip0 end)
+        if success_vc then _vc = vcRef else initSuccess = false end
+
+        -- ... other initialization steps (get font, etc.) ...
+
+        if not initSuccess then
+            print("[ERROR] Initialization via update() failed!")
+            return false
+        end
+
+        -- Seed random (CPU0.Time is the only reliable source)
+        if gdt.CPU0 then math.randomseed(gdt.CPU0.Time) else math.randomseed(0) end
+
+        initialized = true
+        print("Initialization via update() complete.")
+        return true
+    end
+
+    function update(dt)
+        if not initialized then
+             if not performInitialization() then
+                 if _vc then pcall(function() _vc:Clear(color.red); _vc:RenderOnScreen() end) end
+                 return
+             end
+        end
+
+        if type(dt) ~= "number" or dt <= 0 or dt > 0.1 then dt = 1 / 60 end
+
+        -- Main update logic...
+    end
+    ```
+
+## Accessing Gadget Components (`gdt`)
+
+*   `[ACCESS]` Via global `gdt` table.
+*   `[REFERENCE]` Use **editor name** (case-sensitive: `gdt.VideoChip0`, `gdt.Wifi0`, `gdt.LedButton0`).
+    *   `[EXCEPTION]` `LcdDisplay` is `gdt.LcdN` (e.g., `gdt.Lcd0`).
+*   `[DISCOVERY]` `pairs(gdt)`.
+*   `[COMPONENT_TYPES]` `AnalogStick`, `DPad`, `LedButton`, `LcdDisplay`, `Led`, `Screen`, `AudioChip`, `CPU`, `ROM`, `VideoChip`, `Wifi`, `FlashMemory`, `PowerButton`.
+*   **Accessing Members:**
+    *   `[PROPERTY_ACCESS]` Dot notation: `component.PropertyName` (`gdt.Slider0.Value`).
+    *   `[METHOD_ACCESS]` Colon notation: `component:MethodName(args)` (`gdt.VideoChip0:Clear()`).
+
+## Common Component APIs
+
+*   **`VideoChipN`**: See [Drawing](#drawing-videochip-api---gdtvideochipn). `.Width`, `.Height`.
+*   **`SliderN`**: `.Value` (number, 0-100).
+*   **`LedButtonN`**: `.ButtonState` (held), `.ButtonDown` (pressed), `.LedState` (r/w boolean).
+*   **`DPadN`**: `.X`, `.Y` (-100, 0, 100).
+*   **`StickN` / `AnalogStickN`**: `.X`, `.Y` (-100 to 100).
+*   **`CPUN`**: `.DeltaTime` (use `dt`), `.Time` (total sim seconds). **Crucial for seeding random.**
+*   **`AudioChipN`**: `:SetChannelVolume()`, `:Play()`, `:IsPlaying()`.
+*   **`LcdN`** (`LcdDisplay`): `.Text` (write string).
+*   **`ScreenN`**: `.Width`, `.Height`, `.Offset`.
+*   **`WifiN`**: See [Networking](#networking-wifi-api---gdtwifin). `.AccessDenied`.
+*   **`FlashMemoryN`**: See [Persistence](#persistence-flashmemoryn-api---gdtflashmemoryn). `.Size`, `.Usage`.
+*   **`PowerButtonN`**: `.PowerState` (read-only boolean). Check changes in `update()`.
+
+## Time & Frame Rate
+
+*   `[SOURCE]` Use `gdt.CPU0` if available.
+*   **`.DeltaTime` (`dt` in `update`)**:
+    *   `[DEFINITION]` Time since last frame (seconds).
+    *   `[RULE]` Always validate and clamp `dt`:
+        ```lua
+        if type(dt) ~= "number" or dt <= 0 or dt > 0.1 then dt = 1 / 60 end
+        ```
+*   **`.Time` (from `gdt.CPU0`)**:
+    *   `[DEFINITION]` Total simulation time elapsed (seconds).
+    *   `[USE_CASE]` **Primary source for seeding `math.randomseed()`**. Also useful for unique IDs, simple timing.
+*   **`os.clock()`**:
+    *   `[STATUS]` **Unavailable.** `[CONFIRMED]`
+*   **`os.time()`, `os.date()`, `os.difftime()`**:
+    *   `[STATUS]` **Unavailable.** `[CONFIRMED]`
+*   **`math.randomseed()`**:
+    *   `[RECOMMENDATION]` Seed using `gdt.CPU0.Time`. If `CPU0` is unavailable, seeding with a constant (like `0`) results in predictable sequences.
+        ```lua
+        if gdt.CPU0 then math.randomseed(gdt.CPU0.Time) else math.randomseed(0) end
+        ```
+*   **Manual Timers:**
+    *   `[TECHNIQUE]` Decrement by `dt` in `update()`: `timer = timer - dt`.
+
+## Input Handling
+
+*   **Stick (`gdt.StickN` / `gdt.AnalogStickN`)**: `.X`, `.Y` (-100 to 100).
+*   **DPad (`gdt.DPadN`)**: `.X`, `.Y` (-100, 0, 100). Use edge detection.
+*   **LedButton (`gdt.LedButtonN`)**: `.ButtonDown` (press), `.ButtonState` (hold).
+*   **`KeyboardChipN` / `GamepadChipN`**: Events via `eventChannelN(sender, arg)`. Inspect `arg` table (`KeyCode`, `Char`, `ButtonName`, etc.). `[CONFIRMED]`
+
+## Drawing (VideoChip API - `gdt.VideoChipN`)
+
+*   `[REFERENCE]` `local _vc = gdt.VideoChip0` (Get in `onInit` or checked `performInitialization`).
+*   `[DIMENSIONS]` `_vc.Width`, `_vc.Height`.
+*   `[COORDINATES]` `vec2(x, y)`. Use `math.floor()` for integer coords.
+*   `[PERFORMANCE]` Handles thousands of simple calls/frame.
+*   `[RENDER_TARGETS]` `:RenderOnScreen()`, `:RenderOnBuffer(index)`.
+
+### Functions (Signatures Critical)
+
+*   `:Clear(color color)`
+*   `:SetPixel(position vec2, color color)`
+*   `:DrawLine(position1 vec2, position2 vec2, color color)`
+*   `:DrawCircle(center vec2, radius number, color color)` (Outline)
+*   `:FillCircle(center vec2, radius number, color color)` (Filled)
+*   `:DrawRect(position1 vec2, position2 vec2, color color)` (Outline, corner coords)
+*   `:FillRect(position1 vec2, position2 vec2, color color)` (Filled, corner coords) `[CONFIRMED]`
+*   `:DrawTriangle(position1 vec2, position2 vec2, position3 vec2, color color)`
+*   `:FillTriangle(position1 vec2, position2 vec2, position3 vec2, color color)`
+*   `:DrawSprite(spriteSheet SpriteSheet, spriteIndex number, position vec2, color color, flags number)`
+*   `:DrawCustomSprite(spriteSheet SpriteSheet, spriteIndex number, position vec2, size vec2, color color, flags number)`
+*   `:DrawText(position vec2, fontSprite SpriteSheet, text string, textColor color, backgroundColor color)` `[NOTE]` Signature might vary. Basic: `DrawText(pos, font, text, color)` may work. Use `color.clear` for transparent background `[CONFIRMED]`. Requires font asset (e.g., `gdt.ROM.System.SpriteSheets["StandardFont"]`).
+*   *(Other functions: `:RasterSprite`, `:DrawPointGrid`, `:SetPixelData`, etc. Verify signatures.)*
+
+## Networking (Wifi API - `gdt.WifiN`)
+
+*   `[PERMISSION]` Requires user permission. Check `gdt.Wifi0.AccessDenied`.
+*   `[ASYNCHRONOUS]` Requests non-blocking. Responses via `eventChannelN`.
+*   `[SETUP]` Connect Wifi output to Lua input channel `N`. Implement `function eventChannelN(sender, response)`.
+*   **Request Methods (Return `handle`):** `:WebGet`, `:WebPutData`, `:WebPostData`, `:WebPostForm`, `:WebCustomRequest`.
+*   **Control Methods:** `:WebAbort`, `:GetWebUploadProgress`, `:GetWebDownloadProgress`.
+*   **Cookie Methods:** `:ClearCookieCache`, `:ClearUrlCookieCache`.
+*   **Response Event (`WifiWebResponseEvent` in `eventChannelN`):** `response` table (`RequestHandle`, `ResponseCode`, `IsError`, `ErrorMessage`, `Text`, `Data`). Check `IsError`, `ResponseCode`. Match `RequestHandle`.
+
+## Data Types
+
+*   **`vec2` / `vec3`:** Built-in userdata. `.X`, `.Y`, `.Z`. Supports arithmetic. **No built-in methods** (`.normalize`, `.length`) `[CONFIRMED]`. Implement manually.
+*   **`color` Objects:** Built-in userdata.
+    *   **Built-in Constants:** `[CONFIRMED]` **Only 10 reliable:** `color.black`, `color.blue`, `color.clear`, `color.cyan`, `color.gray`, `color.green`, `color.magenta`, `color.red`, `color.white`, `color.yellow`.
+    *   **Other Colors:** `[RULE]` `[CONFIRMED]` **MUST** use constructors:
+        *   `Color(r, g, b)` (RGB 0-255)
+        *   `ColorRGBA(r, g, b, a)` (RGBA 0-255, Alpha 0-255)
+        *   `ColorHSV(h, s, v)` (H 0-360, S 0-100, V 0-100)
+    *   `[EXAMPLE]` `local MY_ORANGE = ColorRGBA(255, 165, 0, 255)`
+*   **Assets:** `SpriteSheet`, `AudioSample` (userdata from `gdt.ROM`).
+*   **Lua Types:** Standard (`string`, `number`, `boolean`, `table`, `function`, `nil`, `userdata`). `thread` exists but coroutines disabled.
+
+## Vector Math (Manual Implementation Required)
+
+```lua
+local function vec2LengthSq(v) return (v.X*v.X + v.Y*v.Y) end
+local function vec2Length(v) return math.sqrt(vec2LengthSq(v)) end
+local function vec2Normalize(v)
+    local len = vec2Length(v); if len > 1e-6 then return vec2(v.X / len, v.Y / len) else return vec2(0, 0) end
+end

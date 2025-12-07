@@ -1,0 +1,294 @@
+--[[
+Simple Pong for Retrogadget
+Uses: Stick0 for Player 1, Button0 to Start/Reset, Simple AI for Player 2
+Based on Retrogadget Lua Scripting Cheat Sheet v12
+]]
+
+-- Component References (Ensure these names match your editor setup)
+local _vc = gdt.VideoChip0
+local _cpu = gdt.CPU0
+local _stick0 = gdt.Stick0 -- Player 1 control
+-- local _stick1 = gdt.Stick1 -- Uncomment if you want 2-player via Stick1
+local _button0 = gdt.LedButton0 -- Start/Reset button
+local _font = gdt.ROM.System.SpriteSheets["StandardFont"] -- For score/messages
+-- local _audio = gdt.AudioChip0 -- Optional: Add sound later
+-- local _hitSample = gdt.ROM.User.AudioSamples["hit.wav"] -- Optional: Add sound later
+-- local _scoreSample = gdt.ROM.User.AudioSamples["score.wav"] -- Optional: Add sound later
+
+-- Colors (Explicit RGBA, Alpha=255 for opaque)
+local COLOR_BLACK = ColorRGBA(0, 0, 0, 255)
+local COLOR_WHITE = ColorRGBA(255, 255, 255, 255)
+local COLOR_GRAY = ColorRGBA(128, 128, 128, 255)
+local COLOR_BG = COLOR_BLACK
+local COLOR_PADDLE = COLOR_WHITE
+local COLOR_BALL = COLOR_WHITE
+local COLOR_TEXT = COLOR_WHITE
+local COLOR_SEPARATOR = COLOR_GRAY
+
+-- Game Configuration
+local PADDLE_WIDTH = 8
+local PADDLE_HEIGHT = 50
+local PADDLE_SPEED = 250 -- Pixels per second
+local AI_PADDLE_SPEED = 200 -- Make AI slightly slower/easier
+local BALL_SIZE = 8
+local BALL_INITIAL_SPEED = 200 -- Pixels per second
+local WINNING_SCORE = 5
+local SCORE_RESET_DELAY = 1.5 -- Seconds delay after scoring
+
+-- Game State Variables
+local gameState = "START" -- "START", "PLAYING", "SCORED", "GAME_OVER"
+local score1 = 0
+local score2 = 0
+local paddle1Y = 0 -- Top position of paddle 1 (left)
+local paddle2Y = 0 -- Top position of paddle 2 (right)
+local ballX = 0
+local ballY = 0
+local ballVelX = 0
+local ballVelY = 0
+local scoreTimer = 0 -- Timer for delay after scoring
+
+-- Screen Dimensions (Cached for convenience)
+local screenW = 0
+local screenH = 0
+
+-- Helper Functions
+
+-- Reset the ball to the center with a random direction
+local function resetBall()
+    ballX = screenW / 2
+    ballY = screenH / 2
+    local angle = math.random() * math.pi / 2 - math.pi / 4 -- -45 to +45 degrees
+    local directionX = (math.random(0, 1) == 0) and -1 or 1 -- Start left or right
+    ballVelX = directionX * BALL_INITIAL_SPEED * math.cos(angle)
+    ballVelY = BALL_INITIAL_SPEED * math.sin(angle)
+    scoreTimer = SCORE_RESET_DELAY -- Start the delay timer
+    gameState = "SCORED"
+    print("Ball reset. Waiting...")
+end
+
+-- Reset paddles to center
+local function resetPaddles()
+    paddle1Y = (screenH - PADDLE_HEIGHT) / 2
+    paddle2Y = (screenH - PADDLE_HEIGHT) / 2
+end
+
+-- Start a new game
+local function resetGame()
+    print("Resetting game...")
+    score1 = 0
+    score2 = 0
+    resetPaddles()
+    resetBall()
+    -- The state will become "PLAYING" after the scoreTimer runs out in update()
+    _button0.LedState = false -- Turn off LED until game over
+    gameState = "SCORED" -- Go to scored state to apply initial delay
+end
+
+-- Draw text centered horizontally
+local function drawCenteredText(y, text, font, color, bgColor)
+    if not font then return end
+    -- Assuming standard font character width is around 5-6 pixels
+    local textWidth = #text * 6
+    local x = math.floor((screenW - textWidth) / 2)
+    _vc:DrawText(vec2(x, y), font, text, color, bgColor or ColorRGBA(0,0,0,0))
+end
+
+-- Initial Setup (Runs once at the top level)
+screenW = _vc.Width
+screenH = _vc.Height
+resetPaddles() -- Set initial paddle positions
+print("Simple Pong Script Loaded. Screen: " .. screenW .. "x" .. screenH)
+print("Press Button 0 (Enter/Start) to begin!")
+_button0.LedState = true -- Indicate ready to start
+
+-- Game Loop
+function update()
+    -- Get Delta Time and clamp it
+    local dt = _cpu.DeltaTime
+    if dt <= 0 or dt > 0.1 then
+        dt = 1 / 60
+    end
+
+    -- Handle Global Input (Start/Reset)
+    if _button0.ButtonDown then
+        if gameState == "START" or gameState == "GAME_OVER" then
+            resetGame()
+        end
+    end
+
+    -- === STATE: START ===
+    if gameState == "START" then
+        -- Waiting for player to press Start button
+        -- Drawing handled below
+        return -- Nothing else to do in this state
+    end
+
+    -- === STATE: GAME_OVER ===
+    if gameState == "GAME_OVER" then
+        _button0.LedState = true -- Allow reset
+        -- Drawing handled below
+        return -- Nothing else to do in this state
+    end
+
+    -- === STATE: SCORED ===
+    if gameState == "SCORED" then
+        scoreTimer = scoreTimer - dt
+        if scoreTimer <= 0 then
+            gameState = "PLAYING"
+            print("Score delay over. State: PLAYING")
+            -- Check if game ended right after score
+            if score1 >= WINNING_SCORE or score2 >= WINNING_SCORE then
+                gameState = "GAME_OVER"
+                print("Game Over!")
+            end
+        end
+        -- Ball remains stationary during this state, drawing handled below
+        -- Input and paddle movement still allowed during delay
+    end
+
+    -- === STATE: PLAYING or SCORED (Paddle Movement Allowed) ===
+
+    -- Player 1 Paddle Movement (Stick0)
+    local stickYNorm = -_stick0.Y / 100 -- Invert Y, normalize to -1 to 1
+    paddle1Y = paddle1Y + stickYNorm * PADDLE_SPEED * dt
+    -- Clamp paddle to screen bounds
+    paddle1Y = math.max(0, math.min(screenH - PADDLE_HEIGHT, paddle1Y))
+
+    -- Player 2 Paddle Movement (Simple AI)
+    -- AI tries to center its paddle on the ball's Y position
+    local paddle2CenterY = paddle2Y + PADDLE_HEIGHT / 2
+    local targetY = ballY
+    if targetY < paddle2CenterY - PADDLE_HEIGHT * 0.2 then -- Move up only if ball is significantly above center
+        paddle2Y = paddle2Y - AI_PADDLE_SPEED * dt
+    elseif targetY > paddle2CenterY + PADDLE_HEIGHT * 0.2 then -- Move down only if ball is significantly below center
+        paddle2Y = paddle2Y + AI_PADDLE_SPEED * dt
+    end
+    -- Clamp AI paddle to screen bounds
+    paddle2Y = math.max(0, math.min(screenH - PADDLE_HEIGHT, paddle2Y))
+
+    -- === STATE: PLAYING (Ball Movement and Collisions) ===
+    if gameState == "PLAYING" then
+        -- Update ball position
+        ballX = ballX + ballVelX * dt
+        ballY = ballY + ballVelY * dt
+
+        -- Ball Collision: Top/Bottom Walls
+        if ballY - BALL_SIZE / 2 < 0 then
+            ballY = BALL_SIZE / 2 -- Prevent sticking
+            ballVelY = -ballVelY
+            -- Play sound: if _audio and _hitSample then _audio:Play(_hitSample, 0) end
+        elseif ballY + BALL_SIZE / 2 > screenH then
+            ballY = screenH - BALL_SIZE / 2 -- Prevent sticking
+            ballVelY = -ballVelY
+            -- Play sound: if _audio and _hitSample then _audio:Play(_hitSample, 0) end
+        end
+
+        -- Ball Collision: Paddles
+        local ballTop = ballY - BALL_SIZE / 2
+        local ballBottom = ballY + BALL_SIZE / 2
+        local ballLeft = ballX - BALL_SIZE / 2
+        local ballRight = ballX + BALL_SIZE / 2
+
+        -- Paddle 1 (Left) Collision Check
+        local paddle1Top = paddle1Y
+        local paddle1Bottom = paddle1Y + PADDLE_HEIGHT
+        local paddle1Left = 0
+        local paddle1Right = PADDLE_WIDTH
+        if ballLeft < paddle1Right and ballRight > paddle1Left and ballBottom > paddle1Top and ballTop < paddle1Bottom then
+             if ballVelX < 0 then -- Only reflect if moving towards paddle
+                ballX = paddle1Right + BALL_SIZE / 2 -- Prevent sticking inside paddle
+                ballVelX = -ballVelX
+                -- Optional: Add slight angle change based on where it hit the paddle
+                local hitRatio = (ballY - paddle1CenterY) / (PADDLE_HEIGHT / 2) -- -1 (top) to 1 (bottom)
+                ballVelY = ballVelY + hitRatio * 50 -- Adjust vertical speed slightly
+                -- Play sound: if _audio and _hitSample then _audio:Play(_hitSample, 0) end
+             end
+        end
+
+        -- Paddle 2 (Right) Collision Check
+        local paddle2Top = paddle2Y
+        local paddle2Bottom = paddle2Y + PADDLE_HEIGHT
+        local paddle2Left = screenW - PADDLE_WIDTH
+        local paddle2Right = screenW
+        local paddle2CenterY = paddle2Y + PADDLE_HEIGHT / 2
+        if ballRight > paddle2Left and ballLeft < paddle2Right and ballBottom > paddle2Top and ballTop < paddle2Bottom then
+             if ballVelX > 0 then -- Only reflect if moving towards paddle
+                ballX = paddle2Left - BALL_SIZE / 2 -- Prevent sticking inside paddle
+                ballVelX = -ballVelX
+                -- Optional: Add slight angle change
+                local hitRatio = (ballY - paddle2CenterY) / (PADDLE_HEIGHT / 2)
+                ballVelY = ballVelY + hitRatio * 50
+                -- Play sound: if _audio and _hitSample then _audio:Play(_hitSample, 0) end
+            end
+        end
+
+        -- Ball Collision: Side Walls (Scoring)
+        if ballLeft < 0 then
+            -- Player 2 scores
+            score2 = score2 + 1
+            print("Score: P1 " .. score1 .. " - P2 " .. score2)
+            -- Play sound: if _audio and _scoreSample then _audio:Play(_scoreSample, 1) end
+            if score2 >= WINNING_SCORE then
+                gameState = "GAME_OVER"
+                print("Game Over! Player 2 Wins!")
+            else
+                resetBall() -- Resets ball and sets gameState to SCORED
+            end
+        elseif ballRight > screenW then
+            -- Player 1 scores
+            score1 = score1 + 1
+            print("Score: P1 " .. score1 .. " - P2 " .. score2)
+            -- Play sound: if _audio and _scoreSample then _audio:Play(_scoreSample, 1) end
+             if score1 >= WINNING_SCORE then
+                gameState = "GAME_OVER"
+                print("Game Over! Player 1 Wins!")
+            else
+                resetBall() -- Resets ball and sets gameState to SCORED
+            end
+        end
+    end
+
+    -- === Drawing (All States) ===
+    _vc:Clear(COLOR_BG)
+
+    -- Draw Center Line (Optional)
+    local centerX = math.floor(screenW / 2)
+    for y = 0, screenH, 10 do -- Draw dashed line
+        _vc:FillRect(vec2(centerX - 1, y), vec2(centerX + 1 - 1, y + 5 - 1), COLOR_SEPARATOR)
+    end
+
+    -- Draw Paddles
+    -- Paddle 1 (Left)
+    _vc:FillRect(vec2(0, math.floor(paddle1Y)), vec2(PADDLE_WIDTH - 1, math.floor(paddle1Y + PADDLE_HEIGHT - 1)), COLOR_PADDLE)
+    -- Paddle 2 (Right)
+    _vc:FillRect(vec2(screenW - PADDLE_WIDTH, math.floor(paddle2Y)), vec2(screenW - 1, math.floor(paddle2Y + PADDLE_HEIGHT - 1)), COLOR_PADDLE)
+
+    -- Draw Ball (only if not in START state)
+    if gameState ~= "START" then
+        local ballDrawX = math.floor(ballX - BALL_SIZE / 2)
+        local ballDrawY = math.floor(ballY - BALL_SIZE / 2)
+        _vc:FillRect(vec2(ballDrawX, ballDrawY), vec2(ballDrawX + BALL_SIZE - 1, ballDrawY + BALL_SIZE - 1), COLOR_BALL)
+    end
+
+    -- Draw Score
+    if _font then
+        local scoreText = string.format("%d   %d", score1, score2)
+        -- Estimate width: each digit/space ~6px wide
+        local scoreWidth = #scoreText * 6
+        local scoreX = math.floor((screenW - scoreWidth) / 2)
+        local scoreY = 10 -- Position near the top
+        _vc:DrawText(vec2(scoreX, scoreY), _font, scoreText, COLOR_TEXT, COLOR_BG)
+    end
+
+    -- Draw Messages
+    if gameState == "START" then
+        drawCenteredText(screenH / 2 - 10, "Simple Pong", _font, COLOR_WHITE)
+        drawCenteredText(screenH / 2 + 10, "Press Button 0 To Start", _font, COLOR_WHITE)
+    elseif gameState == "GAME_OVER" then
+        local winnerText = (score1 > score2) and "Player 1 Wins!" or "Player 2 Wins!"
+        drawCenteredText(screenH / 2 - 20, "GAME OVER", _font, COLOR_WHITE)
+        drawCenteredText(screenH / 2 - 0, winnerText, _font, COLOR_WHITE)
+        drawCenteredText(screenH / 2 + 20, "Press Button 0 To Play Again", _font, COLOR_WHITE)
+    end
+
+end -- End of update() function
